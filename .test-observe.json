@@ -1,0 +1,29 @@
+{
+  "events": [
+    { "kind": "input", "tag": "INPUT", "value": "T", "t": 1000 },
+    { "kind": "input", "tag": "INPUT", "value": "TO", "t": 1100 },
+    { "kind": "input", "tag": "INPUT", "value": "TOD", "t": 1200 },
+    { "kind": "input", "tag": "INPUT", "value": "TODO", "t": 1300 },
+    { "kind": "input", "tag": "INPUT", "value": "TODO:", "t": 1400 },
+    { "kind": "input", "tag": "INPUT", "value": "TODO: ", "t": 1500 },
+    { "kind": "input", "tag": "INPUT", "value": "TODO: buy milk", "t": 2000 },
+    { "kind": "click", "tag": "BUTTON", "text": "Add", "t": 2200 },
+    { "kind": "input", "tag": "INPUT", "value": "TODO:", "t": 4000 },
+    { "kind": "input", "tag": "INPUT", "value": "TODO: ", "t": 4100 },
+    { "kind": "input", "tag": "INPUT", "value": "TODO: call mom", "t": 4500 },
+    { "kind": "click", "tag": "BUTTON", "text": "Add", "t": 4700 },
+    { "kind": "input", "tag": "INPUT", "value": "TODO:", "t": 6000 },
+    { "kind": "input", "tag": "INPUT", "value": "TODO: review PR before EOD", "t": 6800 },
+    { "kind": "click", "tag": "BUTTON", "text": "Add", "t": 7000 },
+    { "kind": "input", "tag": "INPUT", "value": "TODO: write blog post", "t": 9000 },
+    { "kind": "click", "tag": "BUTTON", "text": "Add", "t": 9200 },
+    { "kind": "input", "tag": "INPUT", "value": "TODO: hit the gym", "t": 11000 },
+    { "kind": "click", "tag": "BUTTON", "text": "Add", "t": 11200 },
+    { "kind": "input", "tag": "INPUT", "value": "TODO: prep dinner", "t": 13000 },
+    { "kind": "click", "tag": "BUTTON", "text": "Add", "t": 13200 }
+  ],
+  "currentCode": {
+    "src/App.tsx": "import { useState } from 'react'\nimport { useHostState } from './hostState'\n\ninterface Note { id: string; text: string }\n\nexport default function App() {\n  const [notes, setNotes] = useHostState<Note[]>('notes', [])\n  const [input, setInput] = useState('')\n\n  const addNote = () => {\n    if (input.trim()) {\n      setNotes([...notes, { id: Date.now().toString(), text: input.trim() }])\n      setInput('')\n    }\n  }\n\n  return (\n    <div className=\"min-h-screen p-8\">\n      <h1>Notes</h1>\n      <input value={input} onChange={e => setInput(e.target.value)} />\n      <button onClick={addNote}>Add</button>\n      <ul>{notes.map(n => <li key={n.id}>{n.text}</li>)}</ul>\n    </div>\n  )\n}\n"
+  },
+  "excludeIds": []
+}

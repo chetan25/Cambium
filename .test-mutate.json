@@ -1,0 +1,10 @@
+{
+  "instruction": "Build a simple notes app: text input, Add button, and a list of saved notes. Persist notes with useHostState.",
+  "snapshot": {
+    "src/App.tsx": "export default function App() {\n  return (\n    <div className=\"min-h-screen flex items-center justify-center p-8 bg-gradient-to-br from-zinc-50 to-white\">\n      <div className=\"max-w-md text-center space-y-4\">\n        <div className=\"text-5xl select-none\">✨</div>\n        <h1 className=\"text-2xl font-semibold tracking-tight text-zinc-900\">\n          A blank canvas\n        </h1>\n        <p className=\"text-sm leading-6 text-zinc-500\">\n          Tell me what you'd like to build in the chat on the left,\n          <br />\n          or pick a quick-start to get going fast.\n        </p>\n      </div>\n    </div>\n  )\n}\n",
+    "src/main.tsx": "import { createRoot } from 'react-dom/client'\nimport App from './App'\nimport './index.css'\nimport './observer'\n\ncreateRoot(document.getElementById('root')!).render(<App />)\n",
+    "src/hostState.ts": "import { useEffect, useRef, useState } from 'react'\nexport function useHostState<T>(key: string, initial: T): [T, (v: T) => void] {\n  const [value, setValue] = useState<T>(initial)\n  const loaded = useRef(false)\n  useEffect(() => {\n    window.parent.postMessage({ type: 'STATE_GET', key }, '*')\n  }, [key])\n  const set = (v: T) => { setValue(v); if (loaded.current) window.parent.postMessage({ type: 'STATE_SET', key, value: v }, '*') }\n  return [value, set]\n}\n",
+    "src/index.css": "@tailwind base;\n@tailwind components;\n@tailwind utilities;\n"
+  },
+  "history": []
+}

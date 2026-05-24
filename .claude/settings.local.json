@@ -4,7 +4,14 @@
       "WebFetch(domain:www.tasteskill.dev)",
       "WebFetch(domain:github.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
-      "WebFetch(domain:api.github.com)"
+      "WebFetch(domain:api.github.com)",
+      "PowerShell(Get-ChildItem -Force | Where-Object { $_.Name -notin @\\('node_modules','.next'\\) } | Select-Object Name | Format-Table -HideTableHeaders)",
+      "PowerShell(npm install *)",
+      "PowerShell(npm run *)",
+      "Bash(curl -s http://localhost:3000/api/mutate -o /dev/null -w \"GET %{http_code} \\(POST handler — expecting 4xx for empty GET\\)\\\\n\")",
+      "Bash(curl -s -X POST http://localhost:3000/api/mutate -H 'Content-Type: application/json' --data-binary @.test-mutate.json -w '\\\\n---STATUS:%{http_code}---SIZE:%{size_download}b---TIME:%{time_total}s---\\\\n' -o .test-mutate-response.txt --max-time 90)",
+      "Bash(curl -s -X POST http://localhost:3000/api/observe -H 'Content-Type: application/json' --data-binary @.test-observe.json -w '\\\\n---STATUS:%{http_code}---SIZE:%{size_download}b---TIME:%{time_total}s---\\\\n' -o .test-observe-response.txt --max-time 90)",
+      "Bash(npm install *)"
     ]
   }
 }

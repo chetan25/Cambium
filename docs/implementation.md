@@ -19,17 +19,18 @@
 
 | Layer        | Choice                                             | Why                                                                       |
 | ------------ | -------------------------------------------------- | ------------------------------------------------------------------------- |
-| Framework    | Next.js 14 (App Router, TS)                        | SSR + API routes in one place                                             |
+| Framework    | Next.js 16 (App Router, TS, Turbopack)             | SSR + API routes in one place                                             |
 | WebContainer | `@webcontainer/api`                                | Battle-tested in-browser Node runtime                                     |
-| LLM (mutate) | `claude-sonnet-4-6`                                | Best speed/quality for surgical edits                                     |
-| LLM (observe)| `claude-opus-4-7`                                  | Sharper pattern reasoning, low call volume                                |
-| SDK          | `@anthropic-ai/sdk` + prompt caching               | Cuts session token cost 75–90%                                            |
+| AI gateway   | OpenRouter                                         | One key, many models, future-proofs the model choice                      |
+| LLM (mutate) | `anthropic/claude-sonnet-4.6` via OpenRouter       | Best speed/quality for surgical edits                                     |
+| LLM (observe)| `anthropic/claude-opus-4.7` via OpenRouter         | Sharper pattern reasoning, low call volume                                |
+| SDK          | Vercel AI SDK (`ai`) + `@openrouter/ai-sdk-provider` | `streamObject` gives partial-JSON streaming → diff preview as it arrives |
+| Schema       | Zod                                                | Type-safe structured outputs from `streamObject`                          |
 | Terminal     | `@xterm/xterm` + `@xterm/addon-fit`                | Debug pane for WC output                                                  |
 | State        | Zustand                                            | Lightweight, fits the host's needs                                        |
-| Streaming    | Server-Sent Events                                 | Simpler than WebSocket, fine for one-way streams                          |
 | Patch format | **Search/Replace blocks** (Aider-style)            | Highest LLM success rate; trivial to parse; failures are recoverable      |
 | Pattern DB   | IndexedDB via `idb`                                | Client-side, persistent across reloads                                    |
-| WC seed CSS  | Tailwind                                           | Matches host styling; lets Claude reuse class vocabulary                  |
+| WC seed CSS  | Tailwind 3                                         | Matches host vocabulary; v3 keeps WC seed config simple                   |
 
 ---
 
@@ -62,9 +63,13 @@ WebContainers require a cross-origin-isolated host. Use `Cross-Origin-Embedder-P
 
 ### 4. Prompt caching is mandatory
 
-Every mutation call marks the system prompt + the snapshot block with `cache_control: { type: "ephemeral" }`. Without this, cost compounds linearly. With it, a 10-minute session runs ~$0.30 on Sonnet 4.6; without it, ~$3–5.
+Every mutation call marks the system prompt + the snapshot block as cacheable. OpenRouter passes through Anthropic's cache_control marker — we set it via the Vercel SDK's `providerOptions.openrouter`. Without this, cost compounds linearly. With it, a 10-minute session runs ~$0.30 on Sonnet 4.6; without it, ~$3–5.
 
-### 5. State preservation is best-effort, not guaranteed
+### 5. Structured output via `streamObject`, not raw SSE
+
+We use Vercel AI SDK's `streamObject({ schema })` with a Zod schema for the mutation shape. The endpoint returns a `partialObjectStream` — the client receives the mutations array filling in element-by-element as the model emits it. This is what enables the diff preview to render WHILE the model is still streaming, not after. Raw SSE relays force a "wait for complete JSON → parse → render" sequence; `streamObject` removes that gate.
+
+### 6. State preservation is best-effort, not guaranteed
 
 Vite's React Fast Refresh preserves state when a component's hook order does not change. When Claude adds a new `useState` to an existing component, Fast Refresh remounts and that component's state resets. The North Star demo works because mutations typically add new components or modify siblings, not because state is magically immortal. Verify this honestly on Day 4.
 
@@ -287,104 +292,94 @@ export class FileSystemManager {
 
 ## Day 2 — `/api/mutate` + MutationOrchestrator (propose / apply split)
 
-### The API route
+### The API route — `streamObject` over OpenRouter
 
 ```typescript
 // src/app/api/mutate/route.ts
 
-import Anthropic from '@anthropic-ai/sdk'
-const client = new Anthropic()
+import { streamObject } from 'ai'
+import { createOpenRouter } from '@openrouter/ai-sdk-provider'
+import { z } from 'zod'
+
+const openrouter = createOpenRouter({ apiKey: process.env.OPEN_ROUTER_API_KEY! })
+
+const mutationSchema = z.object({
+  mutations: z.array(
+    z.discriminatedUnion('type', [
+      z.object({
+        type: z.literal('edit'),
+        path: z.string(),
+        blocks: z.array(z.object({ search: z.string(), replace: z.string() })),
+      }),
+      z.object({ type: z.literal('create'), path: z.string(), content: z.string() }),
+      z.object({ type: z.literal('delete'), path: z.string() }),
+    ]),
+  ),
+  summary: z.string(),
+  hotReloadable: z.boolean(),
+})
 
 const MUTATION_SYSTEM_PROMPT = `
 You are a surgical code editor. You modify a running React app via search/replace blocks.
 
-You receive:
-1. The CURRENT files of the running app
-2. A user instruction
-
 Rules:
 - Preserve all existing state, logic, and content.
-- Use search/replace blocks for edits — never rewrite entire files.
-- Each "search" must match the current file EXACTLY (including whitespace).
+- Use "edit" with search/replace blocks for changes to existing files — never rewrite entire files.
+- Each "search" must match the current file EXACTLY (including whitespace, including newlines).
 - Keep blocks tight — only the lines you need to change.
 - "create" only when adding a genuinely new file. "delete" only when explicitly asked.
-
-Response format (JSON only, no prose, no markdown fences):
-{
-  "mutations": [
-    {
-      "path": "src/App.tsx",
-      "type": "edit",
-      "blocks": [
-        { "search": "<exact lines>", "replace": "<new lines>" }
-      ]
-    },
-    { "path": "src/components/Toggle.tsx", "type": "create", "content": "<full file>" },
-    { "path": "src/old.tsx", "type": "delete" }
-  ],
-  "summary": "Added dark mode toggle to header",
-  "hotReloadable": true
-}
+- Set hotReloadable=false ONLY if your changes touch files Vite cannot HMR (e.g. vite.config.ts, package.json).
 `
 
 export async function POST(req: Request) {
   const { instruction, snapshot, history } = await req.json()
 
   const snapshotBlock = Object.entries(snapshot)
-    .map(([p, c]) => `--- ${p} ---\n${c}`)
+    .map(([path, content]) => `--- ${path} ---\n${content}`)
     .join('\n\n')
 
-  const stream = await client.messages.stream({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 8192,
-    system: [
-      { type: 'text', text: MUTATION_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } },
-    ],
+  const result = streamObject({
+    model: openrouter('anthropic/claude-sonnet-4.6'),
+    schema: mutationSchema,
+    system: MUTATION_SYSTEM_PROMPT,
     messages: [
       ...history.slice(-6),
       {
         role: 'user',
-        content: [
-          { type: 'text', text: `CURRENT FILES:\n${snapshotBlock}`, cache_control: { type: 'ephemeral' } },
-          { type: 'text', text: `INSTRUCTION: ${instruction}` },
-        ],
+        content: `CURRENT FILES:\n${snapshotBlock}\n\nINSTRUCTION: ${instruction}`,
       },
     ],
-  })
-
-  // SSE relay
-  const encoder = new TextEncoder()
-  const sse = new ReadableStream({
-    async start(controller) {
-      for await (const event of stream) {
-        if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ delta: event.delta.text })}\n\n`))
-        }
-      }
-      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ done: true })}\n\n`))
-      controller.close()
+    providerOptions: {
+      openrouter: {
+        // OpenRouter passes Anthropic cache_control through to the upstream call.
+        // Mark the system + snapshot prefix as cacheable; budget is shared across the session.
+        cacheControl: { type: 'ephemeral' },
+      },
     },
   })
 
-  return new Response(sse, {
-    headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' },
-  })
+  return result.toTextStreamResponse()
 }
 ```
 
 ### The orchestrator — propose / apply split
 
-The Day 3 UI needs an approval gate. The orchestrator must NOT apply mutations as a side effect of generating them.
+The Day 3 UI needs an approval gate. The orchestrator must NOT apply mutations as a side effect of generating them. Streaming uses Vercel SDK's `experimental_useObject` from React, or the lower-level `readStreamableValue` pattern for non-React consumers.
 
 ```typescript
 // src/lib/MutationOrchestrator.ts
 
+import { z } from 'zod'
+import type { mutationSchema } from '@/app/api/mutate/route'
+
+export type Mutation = z.infer<typeof mutationSchema>['mutations'][number]
+export type ProposedMutations = z.infer<typeof mutationSchema>
+
 export interface PendingMutation {
   id: string
   instruction: string
-  rawResponse: string
-  parsed: { mutations: Mutation[]; summary: string; hotReloadable: boolean }
-  snapshot: Record<string, string>  // for rollback preview
+  parsed: ProposedMutations
+  snapshot: Record<string, string>
 }
 
 export class MutationOrchestrator {
@@ -394,7 +389,7 @@ export class MutationOrchestrator {
 
   async propose(
     instruction: string,
-    onDelta: (text: string) => void,
+    onPartial: (partial: Partial<ProposedMutations>) => void,
   ): Promise<PendingMutation> {
     const snapshot = await this.fs.getAppSnapshot()
     const id = crypto.randomUUID()
@@ -404,21 +399,21 @@ export class MutationOrchestrator {
       body: JSON.stringify({ instruction, snapshot, history: this.history }),
     })
 
-    let raw = ''
+    // Vercel SDK streams partial JSON over text/plain; parse-on-the-fly with a
+    // streaming JSON parser. SDK ships a helper for this; for the non-React path
+    // we consume `result.toTextStreamResponse()` and parse client-side.
+    let partial: Partial<ProposedMutations> = {}
     const reader = res.body!.getReader()
     const decoder = new TextDecoder()
+    let buffer = ''
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
-      for (const line of decoder.decode(value).split('\n')) {
-        if (!line.startsWith('data: ')) continue
-        const payload = JSON.parse(line.slice(6))
-        if (payload.delta) { raw += payload.delta; onDelta(payload.delta) }
-      }
+      buffer += decoder.decode(value, { stream: true })
+      partial = tryParsePartialJson(buffer)
+      onPartial(partial)
     }
-
-    const parsed = JSON.parse(raw)
-    return { id, instruction, rawResponse: raw, parsed, snapshot }
+    return { id, instruction, parsed: partial as ProposedMutations, snapshot }
   }
 
   async apply(pending: PendingMutation): Promise<{ ok: boolean; failures: string[] }> {
@@ -568,6 +563,152 @@ Run three mutations and observe:
 If the demo path keeps mutations in the first two categories, the wow moment holds. Plan your suggestions accordingly.
 
 **Done when:** 10 sibling/styling mutations in a row preserve the notes array. The DevTools network tab shows HMR `.js` updates and zero document loads.
+
+---
+
+## Day 4.5 — Persistence Layer
+
+**Goal:** Mutations survive refresh. User-level state survives Fast Refresh remounts and Claude-induced re-renders.
+
+Two layers, separately persisted:
+
+| Layer | Lives in | Survives across | Updated by |
+| --- | --- | --- | --- |
+| App **code** | WC FS, snapshotted to host IDB | Refresh, multi-session | Claude mutations |
+| App **state** | Host IDB, synced via postMessage | Code mutations + refresh + remounts | The seed app itself |
+| Mutation log | Host IDB | Refresh | Orchestrator |
+
+### `SessionStore` — host-side IDB facade
+
+```typescript
+// src/lib/SessionStore.ts
+import { openDB } from 'idb'
+
+export const dbPromise = openDB('living-app', 1, {
+  upgrade(db) {
+    db.createObjectStore('code_snapshots', { keyPath: 'id' })
+    db.createObjectStore('app_state')                            // key/value
+    const log = db.createObjectStore('mutation_log', { keyPath: 'id' })
+    log.createIndex('by_applied_at', 'appliedAt')
+    // Phase 2 reuses the same DB:
+    const events = db.createObjectStore('events', { keyPath: 'id', autoIncrement: true })
+    events.createIndex('by_t', 't')
+    db.createObjectStore('patterns', { keyPath: 'id' })
+  },
+})
+
+export const SessionStore = {
+  async loadLatestSnapshot() {
+    return (await dbPromise).get('code_snapshots', 'current')
+  },
+  async saveSnapshot(files: Record<string, string>, summary: string) {
+    const db = await dbPromise
+    const now = Date.now()
+    await db.put('code_snapshots', { id: 'current', files, summary, createdAt: now })
+    await db.put('code_snapshots', { id: `snap_${now}`, files, summary, createdAt: now })
+  },
+  async clearSnapshot() {
+    const db = await dbPromise
+    await db.delete('code_snapshots', 'current')
+  },
+  async getState<T>(key: string): Promise<T | undefined> {
+    return (await dbPromise).get('app_state', key) as Promise<T | undefined>
+  },
+  async setState(key: string, value: unknown) {
+    await (await dbPromise).put('app_state', value, key)
+  },
+  async logMutation(entry: { id: string; instruction: string; summary: string; appliedAt: number }) {
+    await (await dbPromise).put('mutation_log', entry)
+  },
+}
+```
+
+### `WebContainerHost.start()` — snapshot-aware boot
+
+```typescript
+const saved = await SessionStore.loadLatestSnapshot()
+const tree = saved ? snapshotToFileTree(saved.files) : seedFiles
+await this.container.mount(tree)
+```
+
+`snapshotToFileTree(files)` rebuilds a `FileSystemTree` from a flat `{ path → content }` map. Tiny helper. The seed is only used on first-ever boot or after explicit reset.
+
+### `MutationOrchestrator.apply()` — snapshot after apply
+
+```typescript
+const files = await this.fs.getAppSnapshot()
+await SessionStore.saveSnapshot(files, pending.parsed.summary)
+await SessionStore.logMutation({
+  id: pending.id,
+  instruction: pending.instruction,
+  summary: pending.parsed.summary,
+  appliedAt: Date.now(),
+})
+```
+
+### `useHostState` — seed-side hook (replaces `useState` for persistent data)
+
+```typescript
+// src/hostState.ts inside the seed
+import { useEffect, useRef, useState } from 'react'
+
+const pending = new Map<string, (v: unknown) => void>()
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('message', (e) => {
+    if (e.data?.type !== 'STATE_RESULT') return
+    const resolve = pending.get(e.data.key)
+    if (resolve) { resolve(e.data.value); pending.delete(e.data.key) }
+  })
+}
+
+export function useHostState<T>(key: string, initial: T): [T, (v: T) => void] {
+  const [value, setValue] = useState<T>(initial)
+  const loaded = useRef(false)
+
+  useEffect(() => {
+    pending.set(key, (v) => {
+      if (v !== undefined) setValue(v as T)
+      loaded.current = true
+    })
+    window.parent.postMessage({ type: 'STATE_GET', key }, '*')
+  }, [key])
+
+  const set = (v: T) => {
+    setValue(v)
+    if (loaded.current) {
+      window.parent.postMessage({ type: 'STATE_SET', key, value: v }, '*')
+    }
+  }
+
+  return [value, set]
+}
+```
+
+The seed `App.tsx` now uses `useHostState('notes', [])` instead of `useState([])`. When Claude mutates the file and adds a `useState('filter')`, the notes survive the remount — they re-hydrate from IDB.
+
+### Host message bridge — extends UsageCollector
+
+```typescript
+window.addEventListener('message', async (e) => {
+  if (!isFromWC(e.origin)) return
+  const msg = e.data
+  if (msg.type === 'STATE_GET') {
+    const value = await SessionStore.getState(msg.key)
+    e.source?.postMessage({ type: 'STATE_RESULT', key: msg.key, value }, '*')
+  } else if (msg.type === 'STATE_SET') {
+    await SessionStore.setState(msg.key, msg.value)
+  } else if (msg.type === 'USAGE_EVENTS') {
+    /* Day 5 handles this */
+  }
+})
+```
+
+### Schema migration honesty note
+
+If Claude refactors `notes: string[]` → `notes: Note[]`, old IDB data won't match the new shape. The seed should treat hydration as "best effort": fall back to `initial` if the stored value fails a type guard. For the demo this is acceptable; a production version would version the schema.
+
+**Done when:** Add 3 notes, refresh the page, notes are still there. Apply a mutation that adds a sibling component, refresh, the mutation and the notes both persist.
 
 ---
 
@@ -857,16 +998,16 @@ living-app/
 │   │   ├── SuggestionCard.tsx
 │   │   └── FileTree.tsx
 │   ├── lib/
-│   │   ├── WebContainerHost.ts       ← boot/install/run
+│   │   ├── WebContainerHost.ts       ← boot/install/run + snapshot-aware mount
 │   │   ├── FileSystemManager.ts      ← snapshot/apply/checkpoint
 │   │   ├── MutationOrchestrator.ts   ← propose/apply split
-│   │   ├── UsageCollector.ts         ← postMessage receiver
+│   │   ├── SessionStore.ts           ← IDB facade: code/state/log/events/patterns
+│   │   ├── HostMessageBridge.ts      ← STATE_GET/SET + USAGE_EVENTS dispatcher
+│   │   ├── UsageCollector.ts         ← events handler (wires into bridge)
 │   │   ├── SuggestionEngine.ts
 │   │   ├── SelfMutator.ts
-│   │   ├── db.ts                     ← idb schema
 │   │   └── webcontainer/
-│   │       ├── seed-files.ts         ← Vite + React + Tailwind seed
-│   │       └── seed/                 ← source for the seed (App.tsx, observer.ts, vite.config.ts, etc.)
+│   │       └── seed-files.ts         ← Vite + React + Tailwind + observer + useHostState inline
 │   └── store/
 │       └── appStore.ts               ← Zustand
 ├── package.json
@@ -930,7 +1071,7 @@ interface AppState {
 
 ---
 
-# 10-Day Build Order
+# 11-Day Build Order
 
 | Day | Task                                          | Depends On | Done When                                                |
 | --- | --------------------------------------------- | ---------- | -------------------------------------------------------- |
@@ -939,7 +1080,8 @@ interface AppState {
 | 2   | `/api/mutate` + MutationOrchestrator (split)  | Day 1      | Propose → preview → apply works end-to-end               |
 | 3   | Split-panel UI + diff preview + approval      | Day 2      | Diff visible before apply; reject discards               |
 | 4   | Seed + HMR verification + state honesty       | Day 3      | 10 sibling mutations preserve notes; state-loss case documented |
-| 5   | UsageCollector + IndexedDB + observer in seed | Day 4      | Events in IDB; origin check works; purge runs            |
+| 4.5 | Persistence layer (SessionStore + useHostState)| Day 4     | Refresh preserves notes AND applied mutations            |
+| 5   | UsageCollector + observer in seed             | Day 4.5    | Events in IDB; origin check works; purge runs            |
 | 6   | `/api/observe` pattern analyser               | Day 5      | Real usage produces ≥1 valid pattern                     |
 | 7   | SuggestionEngine + card UI                    | Day 6      | Card slides in after threshold reached                   |
 | 8   | SelfMutator wiring                            | Days 2 + 7 | Approve suggestion → diff preview → apply → HMR          |
@@ -951,13 +1093,18 @@ interface AppState {
 
 # Cost Notes
 
-With prompt caching ON, bounded history (last 6 turns), and Sonnet 4.6 for `/api/mutate`:
+Via OpenRouter (5% markup over Anthropic direct pricing) with prompt caching ON, bounded history (last 6 turns), and Sonnet 4.6 for `/api/mutate`:
 - First mutation in a session: ~$0.05 (cache miss on system + snapshot)
 - Subsequent mutations: ~$0.01–0.02 each (cache hits)
 - Observe call (Opus 4.7, called every ~20 events): ~$0.04
 - **10-minute heavy session: ~$0.30**
 
 Without caching or with unbounded history: 10–15x that. Don't ship without caching.
+
+OpenRouter notes:
+- Set `OPEN_ROUTER_API_KEY` in `.env.local`
+- Caching passes through Anthropic transparently; the `cacheControl` field on `providerOptions.openrouter` is what triggers it
+- If Anthropic's `claude-sonnet-4.6` slug isn't yet available on OpenRouter, swap to `anthropic/claude-sonnet-4.5` and update the model string in one place (`/api/mutate/route.ts`)
 
 ---
 
