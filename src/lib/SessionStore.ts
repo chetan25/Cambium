@@ -16,6 +16,9 @@ export interface MutationLogEntry {
   summary: string;
   appliedAt: number;
   failures: number;
+  // Snapshot ID created by this mutation. Allows clicking a log entry to
+  // restore that point-in-time.
+  snapshotId?: string;
 }
 
 let dbPromise: Promise<IDBPDatabase> | null = null;
@@ -52,9 +55,10 @@ export const SessionStore = {
   async saveSnapshot(
     files: Record<string, string>,
     summary: string,
-  ): Promise<void> {
+  ): Promise<string> {
     const db = await getDB();
     const now = Date.now();
+    const historicalId = `snap_${now}`;
     const snapshot: CodeSnapshot = {
       id: "current",
       files,
@@ -62,7 +66,35 @@ export const SessionStore = {
       createdAt: now,
     };
     await db.put("code_snapshots", snapshot);
-    await db.put("code_snapshots", { ...snapshot, id: `snap_${now}` });
+    await db.put("code_snapshots", { ...snapshot, id: historicalId });
+    return historicalId;
+  },
+
+  async loadSnapshot(id: string): Promise<CodeSnapshot | undefined> {
+    const db = await getDB();
+    return (await db.get("code_snapshots", id)) as CodeSnapshot | undefined;
+  },
+
+  // Promotes a historical snapshot to `current` (so the next boot resumes it)
+  // and truncates the mutation log to entries up to and including this point.
+  async restoreSnapshot(snapshotId: string): Promise<CodeSnapshot | undefined> {
+    const db = await getDB();
+    const snap = (await db.get("code_snapshots", snapshotId)) as
+      | CodeSnapshot
+      | undefined;
+    if (!snap) return undefined;
+    await db.put("code_snapshots", { ...snap, id: "current" });
+
+    const log = (await db.getAll("mutation_log")) as MutationLogEntry[];
+    const tx = db.transaction("mutation_log", "readwrite");
+    for (const entry of log) {
+      if (entry.snapshotId && entry.appliedAt > snap.createdAt) {
+        await tx.store.delete(entry.id);
+      }
+    }
+    await tx.done;
+
+    return snap;
   },
 
   async clearSnapshot(): Promise<void> {

@@ -11,7 +11,13 @@
       "Bash(curl -s http://localhost:3000/api/mutate -o /dev/null -w \"GET %{http_code} \\(POST handler — expecting 4xx for empty GET\\)\\\\n\")",
       "Bash(curl -s -X POST http://localhost:3000/api/mutate -H 'Content-Type: application/json' --data-binary @.test-mutate.json -w '\\\\n---STATUS:%{http_code}---SIZE:%{size_download}b---TIME:%{time_total}s---\\\\n' -o .test-mutate-response.txt --max-time 90)",
       "Bash(curl -s -X POST http://localhost:3000/api/observe -H 'Content-Type: application/json' --data-binary @.test-observe.json -w '\\\\n---STATUS:%{http_code}---SIZE:%{size_download}b---TIME:%{time_total}s---\\\\n' -o .test-observe-response.txt --max-time 90)",
-      "Bash(npm install *)"
+      "Bash(npm install *)",
+      "Bash(curl -s http://localhost:3000/ -o .test-page.html -w \"STATUS:%{http_code} SIZE:%{size_download}b TIME:%{time_total}s\\\\n\")",
+      "Bash(grep -o 'class=\"[^\"]\\\\{0,80\\\\}' .test-page.html)",
+      "WebFetch(domain:www.npmjs.com)",
+      "WebFetch(domain:openrouter.ai)",
+      "Bash(curl -s -X POST http://localhost:3000/api/mutate -H 'Content-Type: application/json' --data-binary @.test-mutate.json -w 'STATUS:%{http_code} TIME:%{time_total}s\\\\n' -o /tmp/.r1.txt --max-time 90)",
+      "Bash(curl -s -X POST http://localhost:3000/api/mutate -H 'Content-Type: application/json' --data-binary @.test-mutate.json -w 'STATUS:%{http_code} TIME:%{time_total}s\\\\n' -o /tmp/.r2.txt --max-time 90)"
     ]
   }
 }

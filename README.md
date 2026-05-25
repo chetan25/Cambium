@@ -19,14 +19,17 @@ Every other AI tool is reactive — it waits for a prompt. Cambium is the opposi
 1. Boots an isolated Node runtime in the browser via WebContainers
 2. Mounts a Vite + React + Tailwind seed inside it
 3. Either starts from a welcome canvas or restores your last saved snapshot from IndexedDB
-4. Streams structured search/replace mutations from Claude (via OpenRouter)
-5. Previews the diff before applying
-6. Applies via the WebContainer's filesystem API
-7. Vite HMR propagates the change without a full reload
-8. Persists the resulting file tree back to IndexedDB
-9. App state (notes, todos, settings) lives in a separate IDB layer — survives mutations and refreshes
-10. The iframe observer streams usage events to the host; the suggestion engine periodically asks the model to find behavioral patterns
-11. Approved patterns route through the same mutation pipeline as manual chat
+4. Accepts a text prompt, a quick-pick template, OR a pasted/dropped image as the input
+5. Streams structured search/replace mutations from Claude (via OpenRouter) with prompt caching on the system + snapshot prefix
+6. Previews the diff before applying
+7. Applies via the WebContainer's filesystem API
+8. Vite HMR propagates the change without a full reload
+9. Auto-installs any missing npm package that Claude references but the seed doesn't have
+10. Persists the resulting file tree back to IndexedDB — every mutation becomes a restorable snapshot
+11. App state (notes, todos, settings) lives in a separate IDB layer — survives mutations and refreshes
+12. The iframe observer streams usage events to the host; the suggestion engine periodically asks the model to find behavioral patterns
+13. Approved patterns route through the same mutation pipeline as manual chat
+14. Switches to a full-screen layout with a floating chat once the app exists, so the running app gets center stage
 
 ## Stack
 
@@ -70,6 +73,29 @@ OPENROUTER_MUTATE_MODEL=anthropic/claude-sonnet-4.5
 OPENROUTER_OBSERVE_MODEL=anthropic/claude-sonnet-4.5
 ```
 
+### Image input
+
+The chat input accepts a visual target alongside (or instead of) text. Paste an image from your clipboard, drop a file onto the input, or click the paperclip. Cambium ships the image as a content block in the same `/api/mutate` request — Sonnet 4.5 sees the image and the current code, and proposes mutations that match the design.
+
+Constraints:
+- PNG, JPEG, WebP, or GIF
+- Under 5 MB per image
+- Adds ~1500–2000 input tokens per image (priced as standard input on OpenRouter)
+
+### Full-screen mode + floating chat
+
+After the first mutation lands (or when you return to a saved session), Cambium flips to a full-screen view of the running app. A floating chat button in the bottom-right opens a side drawer for continued conversation, diff previews, and the mutation history. Suggestions appear as toasts in the top-right; after 60s they collapse into a green count badge on the floating button so they stop demanding attention. Use the column-split icon in the drawer header to return to the split editor view — your choice locks for the rest of the session.
+
+### Restoring earlier versions
+
+Every applied mutation snapshots the full WebContainer file tree. Hover any entry in the mutation log and click **Restore** to revert to that version. The current code is overwritten and any later mutations drop from the log. Your `useHostState` data (notes, todos, settings) survives the restore — it lives in the host's IDB layer, not in the WC files.
+
+### Auto-resolving missing imports
+
+When Claude introduces an import that isn't in the seed's `package.json` (say, `framer-motion`), Vite would normally fail to resolve it. Cambium's `RuntimeErrorWatcher` scans the dev-server output for `Failed to resolve import "X"`, parses the package name (handling `@scope/pkg` and `pkg/subpath` cleanly), and runs `npm install X` inside the WebContainer automatically. A small "Installing X…" banner shows progress. Vite picks up the new dep and re-renders without you having to do anything.
+
+The watcher dedupes by package name per session, so a noisy log won't trigger redundant installs. Failed installs surface as a regular error (e.g., a typo'd package name like `reactt`).
+
 ## The canonical demo
 
 1. Boot the container, click **Notes** quick-pick. The first mutation scaffolds a notes app from the welcome canvas
@@ -86,23 +112,30 @@ OPENROUTER_OBSERVE_MODEL=anthropic/claude-sonnet-4.5
 +-----------------------------------------------------------------+
 |                       NEXT.JS HOST                              |
 |                                                                 |
-|   ControlPanel              LiveApp                             |
-|     ChatInput                 <iframe src={wcUrl}>              |
-|     SuggestionCard            Vite dev server                   |
-|     DiffPreview               WebContainer runtime              |
-|     MutationLog               Observer baked into seed          |
+|   SplitShell (pre-mutation)    FullShell (post-mutation)        |
+|     ControlPanel                 FloatingFab                    |
+|     LiveApp                      SuggestionToast                |
+|                                  Drawer (ChatInput + log)       |
+|                                  Full-screen iframe             |
+|                                                                 |
+|              All shells share the same hook:                    |
+|              useMutationFlow                                    |
+|                                                                 |
+|     ChatInput  +  DiffPreview  +  MutationLog  +  SuggestionCard |
 |                                                                 |
 |        \                /                                       |
 |         \              /                                        |
-|       MutationOrchestrator                                      |
-|       SuggestionEngine                                          |
-|       UsageCollector                                            |
-|       FileSystemManager                                         |
-|       WebContainerHost                                          |
-|       HostMessageBridge                                         |
-|       SessionStore (IDB)                                        |
+|       MutationOrchestrator    (propose / apply / restore)       |
+|       SuggestionEngine        (threshold + debounce + dedup)    |
+|       UsageCollector          (events -> IDB)                   |
+|       FileSystemManager       (snapshot / apply / overwriteSrc) |
+|       RuntimeErrorWatcher     (Vite log -> npm install)         |
+|       WebContainerHost        (boot / install / installPackage) |
+|       HostMessageBridge       (STATE_GET/SET, USAGE_EVENTS)     |
+|       SessionStore (IDB)      (code, state, log, events)        |
 |                                                                 |
-|        +-- /api/mutate    (Sonnet 4.5, streamObject, Zod)       |
+|        +-- /api/mutate    (Sonnet 4.5, streamObject, Zod,       |
+|        |                   cache_control, image input)          |
 |        +-- /api/observe   (Sonnet 4.5, generateObject, Zod)     |
 +-----------------------------------------------------------------+
 ```
@@ -144,34 +177,38 @@ The seed exposes a `useHostState<T>(key, initial)` hook. Inside the WC, calling 
 ```
 src/
   app/
-    page.tsx                     Top-level layout
+    page.tsx                     Picks SplitShell or FullShell, owns boot lifecycle
     layout.tsx                   Geist fonts + metadata
     globals.css                  Tailwind, transition baseline, keyframes
     api/
-      mutate/route.ts            streamObject + search/replace schema
-      observe/route.ts           generateObject + pattern schema
+      mutate/route.ts            streamObject + search/replace + image content + cache_control
+      observe/route.ts           generateObject + pattern schema + cache_control
   components/
-    ControlPanel.tsx             Left pane
-    ChatInput.tsx                Textarea + quick-picks
+    ControlPanel.tsx             Split-mode shell (sidebar + iframe)
+    FullShell.tsx                Full-screen shell (iframe + FAB + drawer + toast)
+    ChatInput.tsx                Textarea + quick-picks + image (paste/drop/paperclip)
     DiffPreview.tsx              Search/replace diff renderer
-    MutationLog.tsx              divide-y mutation history
+    MutationLog.tsx              divide-y history with hover-to-restore
     SuggestionCard.tsx           AI-noticed card
-    LiveApp.tsx                  Right pane (iframe + terminal drawer)
+    LiveApp.tsx                  Right pane in split mode (iframe + terminal drawer)
+  hooks/
+    useMutationFlow.ts           Shared propose/apply/restore handlers for both shells
   lib/
-    WebContainerHost.ts          Boot/install/run + snapshot-aware mount
-    FileSystemManager.ts         snapshot/apply/checkpoint/restore
-    MutationOrchestrator.ts      propose / apply / rollback
-    SessionStore.ts              IDB facade
+    WebContainerHost.ts          Boot/install/run + snapshot-aware mount + installPackage
+    FileSystemManager.ts         snapshot/apply/checkpoint/restore/overwriteSrc
+    MutationOrchestrator.ts      propose (image support) / apply / rollback
+    SessionStore.ts              IDB facade (snapshots, state, log, events, restore)
     HostMessageBridge.ts         STATE_GET/SET + USAGE_EVENTS dispatcher
     UsageCollector.ts            Persists events, drives engine
     SuggestionEngine.ts          Threshold + debounce + dedup
     SelfMutator.ts               Pattern -> instruction wrapper
+    RuntimeErrorWatcher.ts       Vite log scanner -> auto npm install
     mutation-types.ts            Zod schemas for /api/mutate
     observe-types.ts             Zod schemas for /api/observe
     webcontainer/
       seed-files.ts              Vite + React + Tailwind + observer + useHostState
   store/
-    appStore.ts                  Zustand
+    appStore.ts                  Zustand: WC state, mutations, suggestions, view mode, auto-fix banner
 ```
 
 ## Tuning knobs
@@ -188,16 +225,18 @@ For a 10-second demo loop: drop `ANALYSIS_THRESHOLD` to 5 and `DEBOUNCE_MS` to 2
 
 ## Cost
 
-Sonnet 4.5 via OpenRouter, no prompt caching yet:
+Sonnet 4.5 via OpenRouter, **prompt caching active** (system prompt + snapshot block marked ephemeral, 5-minute TTL):
 
-| Action                          | Approximate cost |
-| ------------------------------- | ---------------- |
-| First scaffold mutation         | ~$0.04           |
-| Subsequent evolution mutations  | ~$0.02 each      |
-| One observe analysis            | ~$0.04           |
-| Heavy 10-minute session         | ~$0.30 – $0.60   |
+| Action                                | Approximate cost |
+| ------------------------------------- | ---------------- |
+| First mutation in a session (cold)    | ~$0.025          |
+| Subsequent mutations (warm cache)     | ~$0.015 each (input cost drops ~92%) |
+| Image-attached mutation               | +~$0.01 (image tokens) |
+| One observe analysis                  | ~$0.04           |
+| Auto npm install                      | $0 (no LLM call) |
+| Heavy 10-minute session (with cache)  | ~$0.20 – $0.35   |
 
-Prompt caching on the system prompt and snapshot block would drop subsequent calls by 75–90%. It's the next thing on the list.
+Cache wins are dominated by input-token savings (~92%) but output tokens still bill at full rate, so total session cost reduction is closer to 30–50%. Bigger code bases see bigger gains. Each call logs detailed cost breakdown via `[/api/mutate] usage:` in the dev console.
 
 ## Limitations and known caveats
 
@@ -205,8 +244,9 @@ Prompt caching on the system prompt and snapshot block would drop subsequent cal
 - **One container per tab.** WebContainers enforce a single instance per browser tab. Opening Cambium in a second tab errors clearly.
 - **Block-match failures.** Search/replace requires character-exact matching. Claude occasionally generates a search block that misses by whitespace. The orchestrator surfaces these per-file and applies the rest of the mutation; if every block fails, it rolls back.
 - **State survival is best-effort.** When a mutation adds a hook to an existing component, Fast Refresh remounts and React state resets. `useHostState` mitigates this for explicitly-persisted data but not for in-progress UI state. The system prompt steers Claude toward sibling additions rather than internal hook insertions.
-- **No prompt caching yet.** Each mutation re-sends the full snapshot. Costs compound linearly.
+- **Auto-install is missing-import only.** The RuntimeErrorWatcher resolves missing npm packages. Type errors, syntax errors, and runtime exceptions still need a manual follow-up prompt — a generic "fix this error with AI" loop is a natural extension but not built yet.
 - **One model, no fallback.** If OpenRouter is down or the model slug is unavailable, both endpoints fail. A multi-provider fallback would be a worthwhile robustness add.
+- **Restore is destructive.** Restoring a historical snapshot replaces the current code and truncates the mutation log. No branching/forking — that's a future-work item.
 
 ## Inspiration
 

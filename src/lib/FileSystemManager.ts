@@ -103,4 +103,26 @@ export class FileSystemManager {
   async deleteFile(path: string): Promise<void> {
     await this.container.fs.rm(path);
   }
+
+  // Overwrites every file in `src/` with the given snapshot, then deletes
+  // any files in the current tree that aren't in the snapshot. Used to
+  // restore a historical version of the app.
+  async overwriteSrc(files: Record<string, string>): Promise<void> {
+    const current = await this.getAppSnapshot();
+    const incoming = new Set(Object.keys(files));
+
+    for (const [path, content] of Object.entries(files)) {
+      await this.createFile(path, content);
+    }
+
+    for (const path of Object.keys(current)) {
+      if (!incoming.has(path)) {
+        try {
+          await this.deleteFile(path);
+        } catch {
+          // best-effort cleanup
+        }
+      }
+    }
+  }
 }

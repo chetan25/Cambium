@@ -38,8 +38,8 @@ RULES
 6. For persistent app data (notes, todos, settings) use \`useHostState<T>(key, initial)\` imported from './hostState'. For ephemeral form state (e.g. the current input value), use plain useState.
 7. summary: one short sentence, past tense. Example: "Added a dark mode toggle to the header."
 8. DO NOT modify src/main.tsx, src/observer.ts, or src/hostState.ts. These are infrastructure files — main.tsx is the entrypoint, observer.ts feeds usage analytics to the host, and hostState.ts provides the persistent state hook. Changes there will break the system.
-
-Return only the JSON object — no prose, no markdown fences, no explanations.`;
+9. If an image is attached to the user's message, treat it as the visual target — match its layout, colors, typography, and component composition as closely as possible using Tailwind. The text instruction (if any) refines or constrains the intent; if no instruction is given, infer the design intent from the image alone.
+10. Prefer the packages already in the seed (react, react-dom, plus the configured Vite/Tailwind toolchain). Build animations and UI primitives with CSS + Tailwind by default. You MAY introduce a new dependency (e.g. framer-motion, lucide-react) when it genuinely simplifies the request — the host auto-installs missing imports — but don't reach for one casually.`;
 
 export async function POST(req: Request) {
   if (!process.env.OPEN_ROUTER_API_KEY) {
@@ -53,6 +53,7 @@ export async function POST(req: Request) {
     instruction: string;
     snapshot: Record<string, string>;
     history?: { role: "user" | "assistant"; content: string }[];
+    image?: string;
   };
   try {
     body = await req.json();
@@ -60,7 +61,7 @@ export async function POST(req: Request) {
     return Response.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const { instruction, snapshot, history } = body;
+  const { instruction, snapshot, history, image } = body;
   if (!instruction || typeof instruction !== "string") {
     return Response.json(
       { error: "instruction is required" },
@@ -69,6 +70,12 @@ export async function POST(req: Request) {
   }
   if (!snapshot || typeof snapshot !== "object") {
     return Response.json({ error: "snapshot is required" }, { status: 400 });
+  }
+  if (image !== undefined && typeof image !== "string") {
+    return Response.json(
+      { error: "image must be a base64 data URL string" },
+      { status: 400 },
+    );
   }
 
   const snapshotBlock = Object.entries(snapshot)
@@ -86,19 +93,54 @@ export async function POST(req: Request) {
     schemaDescription:
       "A set of search/replace mutations to apply to the WebContainer source files.",
     system: SYSTEM_PROMPT,
+    // Cache breakpoint on the snapshot block: everything up to and including
+    // this content (system prompt + history + snapshot) becomes a cacheable
+    // prefix. The image and instruction come AFTER the marker so per-request
+    // variability does not invalidate the cached prefix.
     messages: [
       ...(Array.isArray(history) ? history.slice(-6) : []),
       {
         role: "user",
-        content: `CURRENT FILES:\n\n${snapshotBlock}\n\nINSTRUCTION: ${instruction}`,
+        content: [
+          {
+            type: "text",
+            text: `CURRENT FILES:\n\n${snapshotBlock}`,
+            providerOptions: {
+              openrouter: { cacheControl: { type: "ephemeral" } },
+            },
+          },
+          ...(image
+            ? [
+                {
+                  type: "text" as const,
+                  text: "VISUAL TARGET (attached image):",
+                },
+                { type: "image" as const, image },
+              ]
+            : []),
+          {
+            type: "text",
+            text: `INSTRUCTION: ${instruction}`,
+          },
+        ],
       },
     ],
+    providerOptions: {
+      // Top-level auto-caching catches any other stable prefixes (e.g. the
+      // system prompt by itself across calls where the snapshot changed).
+      openrouter: {
+        cache_control: { type: "ephemeral", ttl: "5m" },
+      },
+    },
+    onFinish: ({ usage }) => {
+      // Per-call cache visibility for cost tuning. usage shape varies across
+      // SDK versions; logging the whole object so any cache_* fields surface.
+      console.log("[/api/mutate] usage:", JSON.stringify(usage));
+    },
     onError: ({ error }) => {
       console.error("[/api/mutate] streamObject error:", error);
     },
   });
 
-  // Emits the partial JSON as additive text deltas. Client parses with
-  // parsePartialJson on the accumulating buffer for progressive diff preview.
   return result.toTextStreamResponse();
 }

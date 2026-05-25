@@ -2,9 +2,15 @@
 
 import { Check } from "@phosphor-icons/react/dist/ssr/Check";
 import { Warning } from "@phosphor-icons/react/dist/ssr/Warning";
+import { ClockCounterClockwise } from "@phosphor-icons/react/dist/ssr/ClockCounterClockwise";
 import { useAppStore } from "@/store/appStore";
+import type { MutationLogEntry } from "@/lib/SessionStore";
 
-export function MutationLog() {
+interface Props {
+  onRestore?: (entry: MutationLogEntry) => void;
+}
+
+export function MutationLog({ onRestore }: Props) {
   const entries = useAppStore((s) => s.mutationLog);
 
   if (entries.length === 0) {
@@ -20,12 +26,14 @@ export function MutationLog() {
       {entries
         .slice()
         .reverse()
-        .map((entry) => {
+        .map((entry, idx) => {
           const failed = entry.failures > 0;
+          const restorable = !!entry.snapshotId && !!onRestore;
+          const isLatest = idx === 0; // already reversed
           return (
             <li
               key={entry.id}
-              className="flex items-start gap-2.5 py-2 first:pt-0 last:pb-0"
+              className="group flex items-start gap-2.5 py-2 first:pt-0 last:pb-0"
             >
               <span
                 className={`mt-0.5 grid size-4 shrink-0 place-items-center rounded-full ${
@@ -45,10 +53,26 @@ export function MutationLog() {
                 <div className="truncate text-[12.5px] text-zinc-800">
                   {entry.summary}
                 </div>
-                <div className="font-mono text-[10px] text-zinc-400">
-                  {relativeTime(entry.appliedAt)}
+                <div className="flex items-center gap-2 font-mono text-[10px] text-zinc-400">
+                  <span>{relativeTime(entry.appliedAt)}</span>
+                  {isLatest && (
+                    <span className="rounded-sm bg-zinc-100 px-1 text-[9px] font-medium uppercase tracking-wider text-zinc-500">
+                      current
+                    </span>
+                  )}
                 </div>
               </div>
+              {restorable && !isLatest && (
+                <button
+                  type="button"
+                  onClick={() => onRestore!(entry)}
+                  aria-label={`Restore version "${entry.summary}"`}
+                  className="invisible inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 active:scale-[0.97] group-hover:visible"
+                >
+                  <ClockCounterClockwise size={11} weight="bold" />
+                  Restore
+                </button>
+              )}
             </li>
           );
         })}

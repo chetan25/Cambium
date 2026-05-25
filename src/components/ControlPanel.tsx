@@ -1,13 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { ArrowsClockwise } from "@phosphor-icons/react/dist/ssr/ArrowsClockwise";
 import { useAppStore } from "@/store/appStore";
-import { SessionStore } from "@/lib/SessionStore";
 import type { MutationOrchestrator } from "@/lib/MutationOrchestrator";
 import type { SelfMutator } from "@/lib/SelfMutator";
 import type { SuggestionEngine } from "@/lib/SuggestionEngine";
-import type { Pattern } from "@/lib/observe-types";
+import type { FileSystemManager } from "@/lib/FileSystemManager";
+import { useMutationFlow } from "@/hooks/useMutationFlow";
 import { ChatInput } from "./ChatInput";
 import { DiffPreview } from "./DiffPreview";
 import { MutationLog } from "./MutationLog";
@@ -17,6 +16,7 @@ interface Props {
   orchestrator: MutationOrchestrator | null;
   selfMutator: SelfMutator | null;
   suggestionEngine: SuggestionEngine | null;
+  fs: FileSystemManager | null;
   onBoot: () => void;
   onReset: () => void;
 }
@@ -25,6 +25,7 @@ export function ControlPanel({
   orchestrator,
   selfMutator,
   suggestionEngine,
+  fs,
   onBoot,
   onReset,
 }: Props) {
@@ -35,103 +36,17 @@ export function ControlPanel({
   const isStreaming = useAppStore((s) => s.isStreaming);
   const pending = useAppStore((s) => s.pendingMutation);
   const suggestions = useAppStore((s) => s.suggestions);
+  const autoFixNotice = useAppStore((s) => s.autoFixNotice);
 
-  const [applying, setApplying] = useState(false);
-  const [activePatternId, setActivePatternId] = useState<string | null>(null);
-
-  useEffect(() => {
-    SessionStore.getMutationLog().then((entries) => {
-      useAppStore.getState().setMutationLog(entries);
-    });
-  }, []);
-
-  const startProposal = async (
-    instruction: string,
-    selfMutated?: { pattern: Pattern },
-  ) => {
-    if (!orchestrator) return;
-    const store = useAppStore.getState();
-    store.setLastError(null);
-    store.setPartial(null);
-    store.setPending(null);
-    store.setStreaming(true);
-    setActivePatternId(selfMutated?.pattern.id ?? null);
-    try {
-      const onPartial = (partial: Parameters<typeof store.setPartial>[0]) =>
-        useAppStore.getState().setPartial(partial);
-      const pending =
-        selfMutated && selfMutator
-          ? await selfMutator.applyPattern(selfMutated.pattern, onPartial)
-          : await orchestrator.propose(instruction, onPartial);
-      useAppStore.getState().setPending(pending);
-    } catch (e) {
-      useAppStore.getState().setLastError((e as Error).message);
-      useAppStore.getState().setPartial(null);
-      setActivePatternId(null);
-    } finally {
-      useAppStore.getState().setStreaming(false);
-    }
-  };
-
-  const submit = (instruction: string) => startProposal(instruction);
-
-  const apply = async () => {
-    if (!orchestrator || !pending || applying) return;
-    setApplying(true);
-    try {
-      const result = await orchestrator.apply(pending);
-      if (!result.ok && result.appliedCount === 0) {
-        useAppStore
-          .getState()
-          .setLastError(
-            `All mutations failed: ${result.failures
-              .map((f) => `${f.path} (${f.reason})`)
-              .join("; ")}`,
-          );
-        return;
-      }
-
-      const log = await SessionStore.getMutationLog();
-      useAppStore.getState().setMutationLog(log);
-      useAppStore.getState().setPending(null);
-      useAppStore.getState().setPartial(null);
-
-      if (activePatternId) {
-        suggestionEngine?.markApplied(activePatternId);
-        useAppStore.getState().removeSuggestion(activePatternId);
-        setActivePatternId(null);
-      }
-
-      if (result.failures.length > 0) {
-        useAppStore
-          .getState()
-          .setLastError(
-            `Partial apply: ${result.failures
-              .map((f) => f.path)
-              .join(", ")} failed to match`,
-          );
-      }
-    } catch (e) {
-      useAppStore.getState().setLastError((e as Error).message);
-    } finally {
-      setApplying(false);
-    }
-  };
-
-  const reject = () => {
-    useAppStore.getState().setPending(null);
-    useAppStore.getState().setPartial(null);
-    setActivePatternId(null);
-  };
-
-  const approveSuggestion = (pattern: Pattern) => {
-    startProposal(pattern.proposed_feature, { pattern });
-  };
-
-  const dismissSuggestion = (pattern: Pattern) => {
-    suggestionEngine?.dismiss(pattern.id);
-    useAppStore.getState().removeSuggestion(pattern.id);
-  };
+  const {
+    applying,
+    submit,
+    apply,
+    reject,
+    approveSuggestion,
+    dismissSuggestion,
+    restoreMutation,
+  } = useMutationFlow({ orchestrator, selfMutator, suggestionEngine, fs });
 
   const currentSuggestion = suggestions[0] ?? null;
   const showSuggestion =
@@ -189,6 +104,13 @@ export function ControlPanel({
 
       <ChatInput onSubmit={submit} />
 
+      {autoFixNotice && (
+        <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50/60 px-3 py-2 text-[11.5px] text-emerald-800">
+          <span className="size-1.5 animate-pulse rounded-full bg-emerald-500" />
+          <span className="font-mono">{autoFixNotice}</span>
+        </div>
+      )}
+
       {lastError && (
         <div className="rounded-xl border border-amber-200 bg-amber-50/60 px-3 py-2 text-[11.5px] leading-snug text-amber-800">
           {lastError}
@@ -218,7 +140,7 @@ export function ControlPanel({
           )}
         </div>
         <div className="scrollbar-thin flex-1 overflow-auto pr-1">
-          <MutationLog />
+          <MutationLog onRestore={restoreMutation} />
         </div>
       </div>
     </div>

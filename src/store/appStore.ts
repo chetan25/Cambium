@@ -25,6 +25,13 @@ interface AppState {
   // Phase 2 — proactive suggestions
   suggestions: Pattern[];
 
+  // Layout mode
+  viewMode: "split" | "full";
+  manualViewOverride: boolean;
+
+  // Runtime auto-resolve banner ("Installing framer-motion…")
+  autoFixNotice: string | null;
+
   // Actions — WC
   setWcStatus: (s: WCStatus) => void;
   setWcUrl: (u: string | null) => void;
@@ -46,6 +53,12 @@ interface AppState {
   addSuggestions: (patterns: Pattern[]) => void;
   removeSuggestion: (id: string) => void;
   clearSuggestions: () => void;
+
+  // Actions — View mode
+  setViewMode: (mode: "split" | "full", isManual?: boolean) => void;
+
+  // Actions — Runtime auto-resolve
+  setAutoFixNotice: (notice: string | null) => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -62,6 +75,10 @@ export const useAppStore = create<AppState>((set) => ({
 
   mutationLog: [],
   suggestions: [],
+
+  viewMode: "split",
+  manualViewOverride: false,
+  autoFixNotice: null,
 
   setWcStatus: (s) => set({ wcStatus: s }),
   setWcUrl: (u) => set({ wcUrl: u }),
@@ -92,4 +109,12 @@ export const useAppStore = create<AppState>((set) => ({
       suggestions: state.suggestions.filter((p) => p.id !== id),
     })),
   clearSuggestions: () => set({ suggestions: [] }),
+
+  setViewMode: (mode, isManual = false) =>
+    set((state) => ({
+      viewMode: mode,
+      manualViewOverride: isManual || state.manualViewOverride,
+    })),
+
+  setAutoFixNotice: (notice) => set({ autoFixNotice: notice }),
 }));

@@ -89,4 +89,17 @@ export class WebContainerHost {
   async resetToSeed(): Promise<void> {
     await SessionStore.clearSnapshot();
   }
+
+  // Runs `npm install <package>` inside the WebContainer. Output streams to
+  // the same log sink as boot-time install. Used by the RuntimeErrorWatcher
+  // to auto-resolve missing-import errors.
+  async installPackage(packageName: string): Promise<void> {
+    if (!this.container) throw new Error("WebContainer not booted");
+    const proc = await this.container.spawn("npm", ["install", packageName]);
+    proc.output.pipeTo(this.writer());
+    const code = await proc.exit;
+    if (code !== 0) {
+      throw new Error(`npm install ${packageName} failed (exit ${code})`);
+    }
+  }
 }

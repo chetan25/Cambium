@@ -28,9 +28,11 @@ export class MutationOrchestrator {
   // Streams a mutation plan from the API. Does NOT touch the filesystem.
   // onPartial fires whenever the accumulating buffer reaches a parseable
   // (possibly incomplete) JSON object — drives the live diff preview.
+  // image: optional base64 data URL the model can use as a visual target.
   async propose(
     instruction: string,
     onPartial?: (partial: Partial<ProposedMutations>) => void,
+    image?: string | null,
   ): Promise<PendingMutation> {
     const snapshot = await this.fs.getAppSnapshot();
     const id = crypto.randomUUID();
@@ -38,7 +40,12 @@ export class MutationOrchestrator {
     const res = await fetch("/api/mutate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ instruction, snapshot, history: this.history }),
+      body: JSON.stringify({
+        instruction,
+        snapshot,
+        history: this.history,
+        ...(image ? { image } : {}),
+      }),
     });
 
     if (!res.ok) {
@@ -132,16 +139,21 @@ export class MutationOrchestrator {
       return { ok: false, failures, appliedCount };
     }
 
-    // Persist the new state so it survives a refresh.
+    // Persist the new state so it survives a refresh, and remember which
+    // historical snapshot id this mutation produced.
     try {
       const files = await this.fs.getAppSnapshot();
-      await SessionStore.saveSnapshot(files, pending.parsed.summary);
+      const snapshotId = await SessionStore.saveSnapshot(
+        files,
+        pending.parsed.summary,
+      );
       await SessionStore.logMutation({
         id: pending.id,
         instruction: pending.instruction,
         summary: pending.parsed.summary,
         appliedAt: Date.now(),
         failures: failures.length,
+        snapshotId,
       });
     } catch (e) {
       // Persistence failure should not block the UI mutation. Log only.

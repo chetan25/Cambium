@@ -99,13 +99,37 @@ export async function POST(req: Request) {
       schemaName: "ObservationResult",
       schemaDescription: "Patterns inferred from recent user events.",
       system: SYSTEM_PROMPT,
+      // Cache breakpoint on the code block. The code is the largest stable
+      // chunk between observe calls within a single mutation cycle.
       messages: [
         {
           role: "user",
-          content: `EVENTS (most recent ${recentEvents.length}):\n${JSON.stringify(recentEvents, null, 2)}\n\nCURRENT CODE:\n${codeBlock}${excludeNote}`,
+          content: [
+            {
+              type: "text",
+              text: `CURRENT CODE:\n${codeBlock}`,
+              providerOptions: {
+                openrouter: { cacheControl: { type: "ephemeral" } },
+              },
+            },
+            {
+              type: "text",
+              text: `EVENTS (most recent ${recentEvents.length}):\n${JSON.stringify(recentEvents, null, 2)}${excludeNote}`,
+            },
+          ],
         },
       ],
+      providerOptions: {
+        openrouter: {
+          cache_control: { type: "ephemeral", ttl: "5m" },
+        },
+      },
     });
+
+    console.log(
+      "[/api/observe] usage:",
+      JSON.stringify(result.usage),
+    );
 
     return Response.json(result.object);
   } catch (e) {

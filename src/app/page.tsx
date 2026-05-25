@@ -9,9 +9,11 @@ import { UsageCollector } from "@/lib/UsageCollector";
 import { SuggestionEngine } from "@/lib/SuggestionEngine";
 import { SelfMutator } from "@/lib/SelfMutator";
 import { SessionStore } from "@/lib/SessionStore";
+import { RuntimeErrorWatcher } from "@/lib/RuntimeErrorWatcher";
 import { useAppStore } from "@/store/appStore";
 import { ControlPanel } from "@/components/ControlPanel";
 import { LiveApp } from "@/components/LiveApp";
+import { FullShell } from "@/components/FullShell";
 
 type WindowGlobals = {
   __wc: WebContainerHost;
@@ -28,10 +30,36 @@ export default function Home() {
   const [selfMutator, setSelfMutator] = useState<SelfMutator | null>(null);
   const [suggestionEngine, setSuggestionEngine] =
     useState<SuggestionEngine | null>(null);
+  const [fs, setFs] = useState<FileSystemManager | null>(null);
 
   const hostRef = useRef<WebContainerHost | null>(null);
   const bridgeRef = useRef<HostMessageBridge | null>(null);
   const collectorRef = useRef<UsageCollector | null>(null);
+  const watcherRef = useRef<RuntimeErrorWatcher | null>(null);
+  const installInFlight = useRef<Promise<void> | null>(null);
+
+  const viewMode = useAppStore((s) => s.viewMode);
+  const setViewMode = useAppStore((s) => s.setViewMode);
+  const manualOverride = useAppStore((s) => s.manualViewOverride);
+  const mutationLogCount = useAppStore((s) => s.mutationLog.length);
+  const resumedFromSnapshot = useAppStore((s) => s.resumedFromSnapshot);
+
+  // Auto-flip to full mode once the app exists. The user can manually
+  // switch back via the drawer's split-view button, which sets the override
+  // and locks the choice for the rest of the session.
+  useEffect(() => {
+    if (manualOverride) return;
+    if (viewMode === "full") return;
+    if (mutationLogCount > 0 || resumedFromSnapshot) {
+      setViewMode("full", false);
+    }
+  }, [
+    mutationLogCount,
+    resumedFromSnapshot,
+    manualOverride,
+    viewMode,
+    setViewMode,
+  ]);
 
   // Bridge persists for the page's lifetime. Handles STATE_GET/SET directly
   // and forwards USAGE_EVENTS to the UsageCollector once it subscribes.
@@ -45,7 +73,7 @@ export default function Home() {
     };
   }, []);
 
-  // Periodic IDB hygiene — drop events older than 24h. Cheap and quiet.
+  // 24h rolling event purge runs on page load.
   useEffect(() => {
     const cutoff = Date.now() - 24 * 60 * 60 * 1000;
     SessionStore.purgeEventsOlderThan(cutoff).catch(() => {});
@@ -57,31 +85,55 @@ export default function Home() {
     store.setBootError(null);
 
     const host = new WebContainerHost();
+    const watcher = new RuntimeErrorWatcher();
+    watcherRef.current = watcher;
+
+    // Auto-install any missing npm package surfaced by Vite. The watcher
+    // emits at most once per distinct package per session.
+    watcher.onMissingPackage = async ({ packageName }) => {
+      const s = useAppStore.getState();
+      // Serialise installs so two errors in quick succession don't fight.
+      const run = (async () => {
+        s.setAutoFixNotice(`Installing ${packageName}…`);
+        try {
+          await host.installPackage(packageName);
+          s.setAutoFixNotice(null);
+        } catch (e) {
+          s.setAutoFixNotice(null);
+          s.setLastError(
+            `Could not auto-install ${packageName}: ${(e as Error).message}`,
+          );
+        }
+      })();
+      const prior = installInFlight.current ?? Promise.resolve();
+      installInFlight.current = prior.then(() => run);
+      await installInFlight.current;
+    };
+
     host.onStatus = store.setWcStatus;
     host.onUrl = (url) => {
       store.setWcUrl(url);
       bridgeRef.current?.setWcOrigin(url);
     };
-    host.onLog = store.appendTerminal;
+    host.onLog = (chunk) => {
+      store.appendTerminal(chunk);
+      watcher.feed(chunk);
+    };
     hostRef.current = host;
 
     try {
       const container = await host.start();
-      const fs = new FileSystemManager(container);
-      const orch = new MutationOrchestrator(fs);
+      const fsInstance = new FileSystemManager(container);
+      const orch = new MutationOrchestrator(fsInstance);
       const collector = new UsageCollector();
       const engine = new SuggestionEngine(collector);
       const mutator = new SelfMutator(orch);
 
-      // Engine pulls current code when it analyses, and surfaces patterns
-      // back into Zustand for the UI.
-      engine.getCurrentCode = () => fs.getAppSnapshot();
+      engine.getCurrentCode = () => fsInstance.getAppSnapshot();
       engine.onSuggestion = (patterns) => {
         useAppStore.getState().addSuggestions(patterns);
       };
 
-      // Every batch from the iframe ticks the engine; the engine decides
-      // whether thresholds + debounce permit an analysis.
       collector.onBatch = () => {
         engine.maybeAnalyse().catch(() => {});
       };
@@ -91,15 +143,15 @@ export default function Home() {
       }
       collectorRef.current = collector;
 
+      setFs(fsInstance);
       setOrchestrator(orch);
       setSelfMutator(mutator);
       setSuggestionEngine(engine);
       useAppStore.getState().setResumedFromSnapshot(host.resumedFromSnapshot);
 
-      // Console-debug handles.
       const w = window as unknown as WindowGlobals;
       w.__wc = host;
-      w.__fs = fs;
+      w.__fs = fsInstance;
       w.__orch = orch;
       w.__collector = collector;
       w.__engine = engine;
@@ -118,12 +170,24 @@ export default function Home() {
     window.location.reload();
   };
 
+  if (viewMode === "full") {
+    return (
+      <FullShell
+        orchestrator={orchestrator}
+        selfMutator={selfMutator}
+        suggestionEngine={suggestionEngine}
+        fs={fs}
+      />
+    );
+  }
+
   return (
     <main className="grid h-[100dvh] grid-cols-[minmax(380px,38%)_1fr]">
       <ControlPanel
         orchestrator={orchestrator}
         selfMutator={selfMutator}
         suggestionEngine={suggestionEngine}
+        fs={fs}
         onBoot={boot}
         onReset={reset}
       />
