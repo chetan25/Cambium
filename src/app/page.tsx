@@ -43,13 +43,15 @@ export default function Home() {
   const manualOverride = useAppStore((s) => s.manualViewOverride);
   const mutationLogCount = useAppStore((s) => s.mutationLog.length);
   const resumedFromSnapshot = useAppStore((s) => s.resumedFromSnapshot);
+  const wcStatus = useAppStore((s) => s.wcStatus);
 
-  // Auto-flip to full mode once the app exists. The user can manually
-  // switch back via the drawer's split-view button, which sets the override
-  // and locks the choice for the rest of the session.
+  // Auto-flip to full mode once the app exists. Gated on wcStatus === 'ready'
+  // so a persisted mutation log loaded from IDB can't flip us away from the
+  // ControlPanel (which owns the Boot button) before the user has booted.
   useEffect(() => {
     if (manualOverride) return;
     if (viewMode === "full") return;
+    if (wcStatus !== "ready") return;
     if (mutationLogCount > 0 || resumedFromSnapshot) {
       setViewMode("full", false);
     }
@@ -59,6 +61,7 @@ export default function Home() {
     manualOverride,
     viewMode,
     setViewMode,
+    wcStatus,
   ]);
 
   // Bridge persists for the page's lifetime. Handles STATE_GET/SET directly
@@ -90,13 +93,24 @@ export default function Home() {
 
     // Auto-install any missing npm package surfaced by Vite. The watcher
     // emits at most once per distinct package per session.
-    watcher.onMissingPackage = async ({ packageName }) => {
+    watcher.onMissingPackage = async ({ packageName, sourcePath }) => {
       const s = useAppStore.getState();
       // Serialise installs so two errors in quick succession don't fight.
       const run = (async () => {
         s.setAutoFixNotice(`Installing ${packageName}…`);
         try {
           await host.installPackage(packageName);
+          // Vite caches the failed resolution and won't retry on its own when
+          // node_modules changes inside the WC. Touch the importing file so
+          // its watcher fires and Vite re-runs import-analysis.
+          if (sourcePath) {
+            try {
+              await host.touchFile(sourcePath);
+            } catch {
+              // Non-fatal — install still succeeded; user may need to nudge
+              // the file themselves or reload the preview.
+            }
+          }
           s.setAutoFixNotice(null);
         } catch (e) {
           s.setAutoFixNotice(null);

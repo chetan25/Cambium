@@ -1,4 +1,6 @@
-# The Living App — Implementation Plan
+# Cambium — Implementation Plan
+
+> Internal codename during the plan: "The Living App". Public name is **Cambium** — the cell layer in trees where new growth happens. See README.md for the elevator pitch.
 
 ## Ideas B + D
 
@@ -22,8 +24,8 @@
 | Framework    | Next.js 16 (App Router, TS, Turbopack)             | SSR + API routes in one place                                             |
 | WebContainer | `@webcontainer/api`                                | Battle-tested in-browser Node runtime                                     |
 | AI gateway   | OpenRouter                                         | One key, many models, future-proofs the model choice                      |
-| LLM (mutate) | `anthropic/claude-sonnet-4.6` via OpenRouter       | Best speed/quality for surgical edits                                     |
-| LLM (observe)| `anthropic/claude-opus-4.7` via OpenRouter         | Sharper pattern reasoning, low call volume                                |
+| LLM (mutate) | `anthropic/claude-sonnet-4.5` via OpenRouter       | Best speed/quality for surgical edits (overridable via env)               |
+| LLM (observe)| `anthropic/claude-sonnet-4.5` via OpenRouter       | Same model — Sonnet handles pattern reasoning well; Opus was overkill     |
 | SDK          | Vercel AI SDK (`ai`) + `@openrouter/ai-sdk-provider` | `streamObject` gives partial-JSON streaming → diff preview as it arrives |
 | Schema       | Zod                                                | Type-safe structured outputs from `streamObject`                          |
 | Terminal     | `@xterm/xterm` + `@xterm/addon-fit`                | Debug pane for WC output                                                  |
@@ -63,7 +65,11 @@ WebContainers require a cross-origin-isolated host. Use `Cross-Origin-Embedder-P
 
 ### 4. Prompt caching is mandatory
 
-Every mutation call marks the system prompt + the snapshot block as cacheable. OpenRouter passes through Anthropic's cache_control marker — we set it via the Vercel SDK's `providerOptions.openrouter`. Without this, cost compounds linearly. With it, a 10-minute session runs ~$0.30 on Sonnet 4.6; without it, ~$3–5.
+Every mutation call marks the system prompt + the snapshot block as cacheable. OpenRouter passes through Anthropic's cache_control marker — we set it via the Vercel SDK's `providerOptions.openrouter`. Without this, cost compounds linearly. With it, a 10-minute session runs ~$0.20–0.35 on Sonnet 4.5.
+
+**Implementation note from shipping:** the explicit per-block marker (`providerOptions.openrouter.cacheControl: { type: 'ephemeral' }`) goes on the snapshot text block; the image and instruction blocks come AFTER the marker so they don't invalidate the cached prefix. Verified by measurement: input tokens drop ~92% on warm cache hits.
+
+**Anthropic schema quirk to remember:** the JSON schema validator (routed via OpenRouter to Anthropic) **rejects `min`/`max` on numbers and rejects `{type: "integer"}` outright**. Use plain `z.number()` in all Zod schemas and describe bounds in the system prompt instead. This bit us on Day 6's `signal_strength: z.number().int().min(1)`.
 
 ### 5. Structured output via `streamObject`, not raw SSE
 
@@ -960,6 +966,270 @@ Note: even auto-proposed mutations go through the human approval gate. No silent
 
 ---
 
+# PHASE 3 — Polish & Power Features
+
+**Days 10–13 · After Phase 2 shipped, the canonical demo flow worked end-to-end. These are the features that turn it from "demo" into "actually usable".**
+
+---
+
+## Day 10 — Image input
+
+**Goal:** accept a pasted/dropped screenshot as the mutation target.
+
+The seed builds whatever Claude proposes — but users often want to point at a specific design ("build this"). Sonnet 4.5 is multimodal; OpenRouter passes images through transparently; the Vercel SDK supports `image` content blocks. The whole feature is one new content type in the request.
+
+### ChatInput additions
+
+```typescript
+// Paste handler
+onPaste={(e) => {
+  for (const item of e.clipboardData?.items ?? []) {
+    if (item.type.startsWith('image/')) {
+      e.preventDefault()
+      ingestFile(item.getAsFile())
+      return
+    }
+  }
+}}
+
+// Drag-drop wrapper
+onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+onDrop={(e) => { e.preventDefault(); ingestFile(e.dataTransfer.files?.[0]) }}
+
+// Paperclip → hidden <input type="file" accept="image/*">
+
+// Validation
+const ACCEPTED = ['image/png','image/jpeg','image/webp','image/gif']
+const MAX_BYTES = 5 * 1024 * 1024
+```
+
+Encode as a base64 data URL with `FileReader.readAsDataURL`, store in local component state, render thumbnail with a remove button.
+
+### `/api/mutate` content shape
+
+```typescript
+content: [
+  {
+    type: 'text',
+    text: `CURRENT FILES:\n\n${snapshotBlock}`,
+    providerOptions: { openrouter: { cacheControl: { type: 'ephemeral' } } },
+  },
+  ...(image ? [
+    { type: 'text', text: 'VISUAL TARGET (attached image):' },
+    { type: 'image', image },  // image AFTER cache marker so it doesn't invalidate
+  ] : []),
+  { type: 'text', text: `INSTRUCTION: ${instruction}` },
+]
+```
+
+### System prompt addition
+
+> 9. If an image is attached to the user's message, treat it as the visual target — match its layout, colors, typography, and component composition as closely as possible using Tailwind. The text instruction (if any) refines or constrains the intent; if no instruction is given, infer the design intent from the image alone.
+
+**Constraints:** PNG/JPEG/WebP/GIF, ≤5 MB (Anthropic's per-image cap), adds ~1500–2000 input tokens per image.
+
+**Done when:** drop a Figma export, hit send, get matching code.
+
+---
+
+## Day 11 — Restore from mutation log
+
+**Goal:** click any past mutation to revert to that version of the app.
+
+Snapshots already exist (Day 4.5 saved every applied mutation as `snap_<timestamp>` alongside `current`). All that's missing is the click affordance and the restore path.
+
+### Schema changes
+
+```typescript
+interface MutationLogEntry {
+  id: string
+  instruction: string
+  summary: string
+  appliedAt: number
+  failures: number
+  snapshotId?: string  // ← NEW: which historical snap this mutation produced
+}
+
+// SessionStore.saveSnapshot now returns the snapshot id
+async saveSnapshot(files, summary): Promise<string> {
+  const id = `snap_${Date.now()}`
+  await db.put('code_snapshots', { id: 'current', files, summary, createdAt: now })
+  await db.put('code_snapshots', { ...current, id })
+  return id  // ← orchestrator stores this on the mutation log entry
+}
+```
+
+### Restore semantics — destructive, with confirmation
+
+```typescript
+async restoreSnapshot(snapshotId): Promise<CodeSnapshot | undefined> {
+  const snap = await db.get('code_snapshots', snapshotId)
+  if (!snap) return
+  await db.put('code_snapshots', { ...snap, id: 'current' })
+  // Truncate log: drop any entry with appliedAt > snap.createdAt
+  const tx = db.transaction('mutation_log', 'readwrite')
+  for (const entry of await db.getAll('mutation_log')) {
+    if (entry.snapshotId && entry.appliedAt > snap.createdAt) {
+      await tx.store.delete(entry.id)
+    }
+  }
+  return snap
+}
+
+// FileSystemManager.overwriteSrc(files) — writes every file, deletes any
+// current src/ file that isn't in the snapshot. Vite HMR picks up the changes.
+```
+
+User state (notes, todos) survives the restore because it's in host IDB via `useHostState`, not in the WC files. Worth flagging this in the UI — it's a nice property.
+
+> ⚠️ **Restore is destructive.** Newer mutations are discarded with no undo. No branching/forking — that's a future-work item.
+
+**Done when:** hover any log entry → "Restore" button appears → click → confirm → app reverts → Vite HMR fires.
+
+---
+
+## Day 12 — Full-screen layout + floating chat
+
+**Goal:** after the app exists, the running app gets center stage. Chat collapses to a floating affordance.
+
+The split-panel control panel is the right layout for **building** an app. Once the app is alive, the user is mostly _using_ it, and chat should step back. This mirrors how productivity tools work (Linear's Cmd+K, Notion's AI button, Intercom's chat bubble).
+
+### Layout switch
+
+```typescript
+// Zustand
+viewMode: 'split' | 'full'
+manualViewOverride: boolean
+setViewMode: (mode, isManual = false) => void
+
+// page.tsx auto-flip
+useEffect(() => {
+  if (manualOverride) return
+  if (mutationLogCount > 0 || resumedFromSnapshot) setViewMode('full')
+}, [mutationLogCount, resumedFromSnapshot])
+```
+
+Auto-flip on first applied mutation OR resume-from-snapshot. The user can manually toggle back to split via a button in the drawer; doing so sets `manualViewOverride = true`, locking the choice for the rest of the session.
+
+### `FullShell` composition
+
+```
+Layer 0:  Full-screen iframe (z-0)
+Layer 1:  FAB bottom-right (z-20) — chat icon, opens drawer
+Layer 2:  Toast top-right (z-20) — new suggestion, 60s
+Layer 3:  Auto-fix banner top-center (z-20) — "Installing X…"
+Layer 4:  Drawer right (z-30) — ChatInput + DiffPreview + log + suggestions
+
+Inside drawer header: split-view toggle + close (X)
+```
+
+Both shells share the same handler state via a new `useMutationFlow` hook — so `submit / apply / reject / approveSuggestion / restoreMutation` logic exists once.
+
+### Suggestion lifecycle in full mode
+
+```typescript
+// Each suggestion starts as a toast top-right.
+// After 60s it auto-collapses into a green count badge on the FAB.
+const [seenIds, setSeenIds] = useState(new Set<string>())
+const toastSuggestion = suggestions.find((p) => !seenIds.has(p.id))
+const badgeCount = suggestions.filter((p) => seenIds.has(p.id) && p.id !== toastSuggestion?.id).length
+
+// 60s timer
+setTimeout(() => setSeenIds((prev) => new Set(prev).add(toastSuggestion.id)), 60_000)
+```
+
+Clicking the FAB opens the drawer; the drawer surfaces any seen suggestions inline so the user can act on them.
+
+**Done when:** build a notes app via quick-pick → after Apply, layout flips to full-screen → FAB appears bottom-right → drawer toggles cleanly.
+
+---
+
+## Day 13 — Auto-resolve missing imports
+
+**Goal:** when Claude introduces an import that isn't in the seed's package.json, install it automatically instead of failing.
+
+This is mainly defensive. The system prompt steers Claude toward in-seed packages, but it occasionally reaches for `framer-motion`, `lucide-react`, `date-fns`, etc. — especially when given an image with motion. Vite's error path is verbose but predictable: `[plugin:vite:import-analysis] Failed to resolve import "X" from "src/..."`.
+
+### RuntimeErrorWatcher
+
+```typescript
+const MISSING_IMPORT_RE = /Failed to resolve import ["']([^"']+)["']/g
+
+class RuntimeErrorWatcher {
+  buffer = ''
+  seen = new Set<string>()
+  onMissingPackage?: (e: { packageName: string }) => void
+
+  feed(chunk: string) {
+    this.buffer = (this.buffer + chunk).slice(-16_000)
+    for (const m of this.buffer.matchAll(MISSING_IMPORT_RE)) {
+      const rawImport = m[1]
+      if (rawImport.startsWith('.') || rawImport.startsWith('/')) continue
+      const pkg = this.parsePackageName(rawImport)
+      if (!pkg || this.seen.has(pkg)) continue
+      this.seen.add(pkg)
+      this.onMissingPackage?.({ packageName: pkg })
+    }
+  }
+
+  // 'lodash/debounce' → 'lodash'
+  // '@radix-ui/react-dialog' → '@radix-ui/react-dialog'
+  // '@scope/pkg/sub' → '@scope/pkg'
+}
+```
+
+### WebContainerHost.installPackage
+
+```typescript
+async installPackage(pkg: string) {
+  const proc = await this.container.spawn('npm', ['install', pkg])
+  proc.output.pipeTo(this.writer())
+  const code = await proc.exit
+  if (code !== 0) throw new Error(`npm install ${pkg} exited ${code}`)
+}
+```
+
+### Wiring in page.tsx
+
+The dev server log already streams through `host.onLog`. Tap that stream:
+
+```typescript
+host.onLog = (chunk) => {
+  store.appendTerminal(chunk)
+  watcher.feed(chunk)
+}
+
+watcher.onMissingPackage = async ({ packageName }) => {
+  store.setAutoFixNotice(`Installing ${packageName}…`)
+  try {
+    await host.installPackage(packageName)
+  } catch (e) {
+    store.setLastError(`Could not auto-install ${packageName}: ${e.message}`)
+  } finally {
+    store.setAutoFixNotice(null)
+  }
+}
+```
+
+Serialise concurrent installs with a chained promise — two errors in quick succession shouldn't fight each other.
+
+### System prompt update
+
+> 10. Prefer the packages already in the seed (react, react-dom, plus the configured Vite/Tailwind toolchain). Build animations and UI primitives with CSS + Tailwind by default. You MAY introduce a new dependency (e.g. framer-motion, lucide-react) when it genuinely simplifies the request — the host auto-installs missing imports — but don't reach for one casually.
+
+This both reduces unnecessary new deps AND signals to Claude that adding one is a real option when it helps.
+
+**Failure modes the watcher handles cleanly:**
+- Typo'd package name (`reactt`) → `npm install` fails with "404 not found" → surfaced as `lastError`
+- Relative import (`./missing.ts`) → ignored (it's a file-not-found, not a missing package, needs a code mutation instead)
+- Same package referenced multiple times across files → deduped via `seen` set
+
+**Future extension:** generic runtime errors (type errors, undefined references) could trigger an automatic mutation cycle with the error message as the instruction — "self-healing code". Not built yet.
+
+**Done when:** ask for an animation, Claude writes `import { motion } from 'framer-motion'`, Vite errors, watcher catches it, npm install completes, Vite recompiles, the animation works.
+
+---
+
 ## Day 9 — Polish + demo recording
 
 The scripted 60-second demo:
@@ -981,60 +1251,81 @@ The scripted 60-second demo:
 # Project File Structure
 
 ```
-living-app/
+cambium/
 ├── src/
 │   ├── app/
-│   │   ├── page.tsx                  ← Main layout
-│   │   ├── globals.css
+│   │   ├── page.tsx                  ← Picks SplitShell or FullShell, owns boot
+│   │   ├── layout.tsx                ← Geist fonts + metadata
+│   │   ├── globals.css               ← Tailwind, transition baseline, keyframes
 │   │   └── api/
-│   │       ├── mutate/route.ts        ← Phase 1
-│   │       └── observe/route.ts       ← Phase 2
+│   │       ├── mutate/route.ts        ← Phase 1 + image input + cache_control
+│   │       └── observe/route.ts       ← Phase 2 + cache_control
 │   ├── components/
-│   │   ├── ControlPanel.tsx
-│   │   ├── LiveApp.tsx               ← iframe wrapper
-│   │   ├── ChatInput.tsx
+│   │   ├── ControlPanel.tsx          ← split-mode shell
+│   │   ├── FullShell.tsx             ← Phase 3 — full-screen + FAB + drawer + toast
+│   │   ├── LiveApp.tsx               ← iframe + terminal drawer (split mode)
+│   │   ├── ChatInput.tsx             ← text + quick-picks + image (paste/drop/paperclip)
 │   │   ├── DiffPreview.tsx           ← search/replace block rendering
-│   │   ├── MutationLog.tsx
-│   │   ├── SuggestionCard.tsx
-│   │   └── FileTree.tsx
+│   │   ├── MutationLog.tsx           ← divide-y, hover-to-restore
+│   │   └── SuggestionCard.tsx        ← AI-noticed card (emerald)
+│   ├── hooks/
+│   │   └── useMutationFlow.ts        ← Phase 3 — shared propose/apply/restore handlers
 │   ├── lib/
-│   │   ├── WebContainerHost.ts       ← boot/install/run + snapshot-aware mount
-│   │   ├── FileSystemManager.ts      ← snapshot/apply/checkpoint
-│   │   ├── MutationOrchestrator.ts   ← propose/apply split
-│   │   ├── SessionStore.ts           ← IDB facade: code/state/log/events/patterns
+│   │   ├── WebContainerHost.ts       ← boot/install/run + snapshot mount + installPackage
+│   │   ├── FileSystemManager.ts      ← snapshot/apply/checkpoint/overwriteSrc
+│   │   ├── MutationOrchestrator.ts   ← propose (image arg) / apply / rollback
+│   │   ├── SessionStore.ts           ← IDB facade with restore + snapshot history
 │   │   ├── HostMessageBridge.ts      ← STATE_GET/SET + USAGE_EVENTS dispatcher
 │   │   ├── UsageCollector.ts         ← events handler (wires into bridge)
 │   │   ├── SuggestionEngine.ts
 │   │   ├── SelfMutator.ts
+│   │   ├── RuntimeErrorWatcher.ts    ← Phase 3 — Vite log → auto npm install
+│   │   ├── mutation-types.ts
+│   │   ├── observe-types.ts
 │   │   └── webcontainer/
 │   │       └── seed-files.ts         ← Vite + React + Tailwind + observer + useHostState inline
 │   └── store/
-│       └── appStore.ts               ← Zustand
+│       └── appStore.ts               ← Zustand: WC + mutation + suggestions + viewMode + autoFixNotice
 ├── package.json
-├── next.config.mjs                   ← COOP/COEP credentialless
-└── .env.local                        ← ANTHROPIC_API_KEY
+├── next.config.ts                    ← COOP/COEP credentialless
+└── .env.local                        ← OPEN_ROUTER_API_KEY
 ```
 
-## Zustand store shape
+## Zustand store shape (as shipped)
 
 ```typescript
 interface AppState {
+  // WebContainer lifecycle
+  wcStatus: WCStatus  // idle | booting | mounting | installing | starting | ready | error
   wcUrl: string | null
-  booted: boolean
+  bootError: string | null
+  terminalLog: string
+  resumedFromSnapshot: boolean
 
-  conversationHistory: { role: 'user' | 'assistant'; content: string }[]
-  pendingMutation: PendingMutation | null
-  appliedMutations: { id: string; summary: string; at: number }[]
+  // Mutation pipeline
+  isStreaming: boolean
+  partialMutation: Partial<ProposedMutations> | null  // streaming preview
+  pendingMutation: PendingMutation | null              // awaiting Apply/Reject
+  lastError: string | null
 
+  // History
+  mutationLog: MutationLogEntry[]
+
+  // Phase 2 — proactive suggestions
   suggestions: Pattern[]
-  dismissedPatternIds: Set<string>
 
-  // actions
-  setPending: (m: PendingMutation | null) => void
-  logApplied: (id: string, summary: string) => void
-  dismiss: (id: string) => void
+  // Phase 3 — layout mode
+  viewMode: 'split' | 'full'
+  manualViewOverride: boolean  // locks the user's split-view choice for the session
+
+  // Phase 3 — auto-resolve banner ("Installing framer-motion…")
+  autoFixNotice: string | null
+
+  // ...accompanying setters for each slice
 }
 ```
+
+Dismissed pattern ids are kept in-memory on `SuggestionEngine` (not Zustand) because they don't need to drive renders directly — the engine filters before adding to `suggestions[]`.
 
 ---
 
@@ -1053,6 +1344,9 @@ interface AppState {
 | IndexedDB fills up                | Low        | Low    | 24hr rolling purge on host load                                |
 | Session token cost                | Medium     | Medium | Prompt caching on system + snapshot; bounded history           |
 | Generated code is malicious       | Low        | Medium | Operator-approval gate on every mutation; no silent apply      |
+| Claude imports unavailable pkg    | Medium     | Low    | RuntimeErrorWatcher auto-runs `npm install` (Phase 3)          |
+| Restore destroys newer work       | Medium     | Low    | Confirm dialog explicitly warns; future-work: branching/forking |
+| Image too large / wrong type      | Low        | Low    | Client-side 5MB cap + type filter; clear error in UI           |
 
 ---
 
@@ -1071,7 +1365,7 @@ interface AppState {
 
 ---
 
-# 11-Day Build Order
+# Build Order
 
 | Day | Task                                          | Depends On | Done When                                                |
 | --- | --------------------------------------------- | ---------- | -------------------------------------------------------- |
@@ -1086,25 +1380,36 @@ interface AppState {
 | 7   | SuggestionEngine + card UI                    | Day 6      | Card slides in after threshold reached                   |
 | 8   | SelfMutator wiring                            | Days 2 + 7 | Approve suggestion → diff preview → apply → HMR          |
 | 9   | Polish + demo recording                       | Day 8      | 60-second demo recorded                                  |
+| 10  | Image input (paste/drop/paperclip → /api/mutate) | Day 2   | Drop a UI screenshot, get matching code                  |
+| 11  | Restore from mutation log                     | Days 4.5 + 7 | Click old entry → confirm → app reverts via HMR       |
+| 12  | Full-screen layout + floating chat            | Day 4.5    | Auto-flip on first apply; toggle back works; toast→badge |
+| 13  | Auto-resolve missing imports                  | Day 1      | Claude imports `framer-motion` → auto installed → works  |
 
 > ⚠️ **Day 1 has two classes, not one.** WebContainerHost owns the runtime; FileSystemManager owns the files. Don't conflate them.
+>
+> **Phase 1 (Days 0–4.5)** ships the talk-to-app loop. **Phase 2 (Days 5–9)** ships the watch-and-grow loop. **Phase 3 (Days 10–13)** are independent power features built once the core works.
 
 ---
 
-# Cost Notes
+# Cost Notes (measured, as shipped)
 
-Via OpenRouter (5% markup over Anthropic direct pricing) with prompt caching ON, bounded history (last 6 turns), and Sonnet 4.6 for `/api/mutate`:
-- First mutation in a session: ~$0.05 (cache miss on system + snapshot)
-- Subsequent mutations: ~$0.01–0.02 each (cache hits)
-- Observe call (Opus 4.7, called every ~20 events): ~$0.04
-- **10-minute heavy session: ~$0.30**
+Via OpenRouter (~5% markup over Anthropic direct pricing) with prompt caching ON, bounded 6-turn history, Sonnet 4.5 for both routes:
 
-Without caching or with unbounded history: 10–15x that. Don't ship without caching.
+| Action                                | Approximate cost |
+| ------------------------------------- | ---------------- |
+| First mutation in a session (cold)    | ~$0.025          |
+| Subsequent mutations (warm cache)     | ~$0.015 each — input cost drops ~92% |
+| Image-attached mutation               | +~$0.01 (image tokens) |
+| One observe analysis                  | ~$0.04           |
+| Auto npm install                      | $0 (no LLM call) |
+| Heavy 10-minute session               | ~$0.20 – $0.35   |
+
+**Cache wins are dominated by input-token savings (~92%)** but output tokens still bill at full rate, so total session reduction is closer to 30–50%. Bigger codebases see bigger gains. Each call logs detailed cost breakdown via `[/api/mutate] usage:` in the dev console (visible because we set `onFinish` on `streamObject`).
 
 OpenRouter notes:
-- Set `OPEN_ROUTER_API_KEY` in `.env.local`
-- Caching passes through Anthropic transparently; the `cacheControl` field on `providerOptions.openrouter` is what triggers it
-- If Anthropic's `claude-sonnet-4.6` slug isn't yet available on OpenRouter, swap to `anthropic/claude-sonnet-4.5` and update the model string in one place (`/api/mutate/route.ts`)
+- Set `OPEN_ROUTER_API_KEY` in `.env.local` (note the underscore)
+- Caching passes through Anthropic transparently; the `cacheControl` field on `providerOptions.openrouter` per-content-block is what triggers it; the top-level `cache_control` on `providerOptions` enables Anthropic's automatic prefix caching
+- Without caching or with unbounded history: 5–10x the cost. Don't ship without caching
 
 ---
 

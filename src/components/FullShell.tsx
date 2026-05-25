@@ -18,6 +18,15 @@ import { SuggestionCard } from "./SuggestionCard";
 
 const TOAST_DURATION_MS = 60_000;
 
+const FULL_SHELL_STATUS_MESSAGE: Record<string, string> = {
+  idle: "WebContainer not booted yet.",
+  booting: "Booting WebContainer runtime…",
+  mounting: "Mounting source files…",
+  installing: "Installing dependencies inside the WebContainer…",
+  starting: "Starting dev server…",
+  error: "WebContainer failed to start. Check the terminal in split view.",
+};
+
 interface Props {
   orchestrator: MutationOrchestrator | null;
   selfMutator: SelfMutator | null;
@@ -32,6 +41,7 @@ export function FullShell({
   fs,
 }: Props) {
   const wcUrl = useAppStore((s) => s.wcUrl);
+  const wcStatus = useAppStore((s) => s.wcStatus);
   const pending = useAppStore((s) => s.pendingMutation);
   const isStreaming = useAppStore((s) => s.isStreaming);
   const lastError = useAppStore((s) => s.lastError);
@@ -97,8 +107,19 @@ export function FullShell({
             title="Cambium preview"
           />
         ) : (
-          <div className="grid h-full place-items-center text-sm text-zinc-500">
-            Booting WebContainer…
+          <div className="grid h-full place-items-center p-8 text-center">
+            <div className="space-y-3 text-sm text-zinc-500">
+              <div>{FULL_SHELL_STATUS_MESSAGE[wcStatus] ?? FULL_SHELL_STATUS_MESSAGE.idle}</div>
+              {wcStatus === "idle" && (
+                <button
+                  type="button"
+                  onClick={() => setViewMode("split", true)}
+                  className="rounded-xl bg-zinc-950 px-3.5 py-2 text-[13px] font-medium tracking-tight text-white hover:bg-zinc-800 active:scale-[0.98]"
+                >
+                  Switch to split view to boot
+                </button>
+              )}
+            </div>
           </div>
         )}
       </div>

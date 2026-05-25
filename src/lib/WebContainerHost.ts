@@ -102,4 +102,14 @@ export class WebContainerHost {
       throw new Error(`npm install ${packageName} failed (exit ${code})`);
     }
   }
+
+  // Re-writes a file with its current contents to nudge Vite's file watcher.
+  // Needed after auto-install: WC's in-memory fs doesn't emit watcher events
+  // for node_modules changes, so Vite keeps the cached failed-resolution
+  // until the importing file itself changes.
+  async touchFile(path: string): Promise<void> {
+    if (!this.container) throw new Error("WebContainer not booted");
+    const content = await this.container.fs.readFile(path, "utf-8");
+    await this.container.fs.writeFile(path, content);
+  }
 }

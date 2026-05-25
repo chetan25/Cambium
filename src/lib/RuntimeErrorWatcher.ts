@@ -3,11 +3,16 @@
 //   Pre-transform error: Failed to resolve import "lucide-react" from "src/...
 // We scan the dev-server output stream for these and emit one event per
 // distinct missing package so the host can auto-install it.
-const MISSING_IMPORT_RE = /Failed to resolve import ["']([^"']+)["']/g;
+// The source path is captured so the host can "touch" the file after install —
+// Vite caches failed resolutions and won't retry until the importing file
+// changes (WC's in-memory fs doesn't emit watcher events for node_modules writes).
+const MISSING_IMPORT_RE =
+  /Failed to resolve import ["']([^"']+)["'](?: from ["']([^"']+)["'])?/g;
 
 export interface MissingPackageEvent {
   packageName: string;
   rawImport: string;
+  sourcePath?: string;
 }
 
 export class RuntimeErrorWatcher {
@@ -21,6 +26,7 @@ export class RuntimeErrorWatcher {
     this.buffer = (this.buffer + chunk).slice(-16_000);
     for (const match of this.buffer.matchAll(MISSING_IMPORT_RE)) {
       const rawImport = match[1];
+      const sourcePath = match[2];
       // Relative or absolute paths are file-not-found errors, not missing
       // packages. Those require a code mutation, not an npm install.
       if (rawImport.startsWith(".") || rawImport.startsWith("/")) continue;
@@ -28,7 +34,7 @@ export class RuntimeErrorWatcher {
       if (!packageName) continue;
       if (this.seen.has(packageName)) continue;
       this.seen.add(packageName);
-      this.onMissingPackage?.({ packageName, rawImport });
+      this.onMissingPackage?.({ packageName, rawImport, sourcePath });
     }
   }
 

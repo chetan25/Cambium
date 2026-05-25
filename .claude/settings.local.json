@@ -17,7 +17,9 @@
       "WebFetch(domain:www.npmjs.com)",
       "WebFetch(domain:openrouter.ai)",
       "Bash(curl -s -X POST http://localhost:3000/api/mutate -H 'Content-Type: application/json' --data-binary @.test-mutate.json -w 'STATUS:%{http_code} TIME:%{time_total}s\\\\n' -o /tmp/.r1.txt --max-time 90)",
-      "Bash(curl -s -X POST http://localhost:3000/api/mutate -H 'Content-Type: application/json' --data-binary @.test-mutate.json -w 'STATUS:%{http_code} TIME:%{time_total}s\\\\n' -o /tmp/.r2.txt --max-time 90)"
+      "Bash(curl -s -X POST http://localhost:3000/api/mutate -H 'Content-Type: application/json' --data-binary @.test-mutate.json -w 'STATUS:%{http_code} TIME:%{time_total}s\\\\n' -o /tmp/.r2.txt --max-time 90)",
+      "Bash(xargs grep -l -i \"headers\")",
+      "Bash(npx tsc *)"
     ]
   }
 }
