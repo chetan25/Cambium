@@ -21,7 +21,13 @@ The seed includes src/hostState.ts exporting useHostState(key, initial) — a pe
 
 OUTPUT (validated against the AppMutation schema)
 - mutations: array of edits to apply
-- summary: short past-tense description of what changed
+- summary: short past-tense description of what changed (one sentence, the headline)
+- verification: imperative steps the user can perform RIGHT NOW to confirm the change works. Must include both a concrete trigger action AND the observable outcome the user should see. Format examples:
+    "Try: type '1. Code' and press Enter. You should see: the input pre-fills with '2. ' so you can keep typing."
+    "Try: click the new dark-mode toggle in the header. You should see: the background flip from white to slate-900 and the toggle icon switch from sun to moon."
+    "Try: drop an image onto the input. You should see: a thumbnail preview appear above the input with a remove (X) button."
+  If the change is a visual-only tweak with no trigger, describe what to look for: "Look at the buttons — they now have a rounded-2xl shape with an emerald hover state."
+  NEVER write vague verifications like "the feature should work" or "test it out". The user will read this verbatim and follow it; it must be unambiguous.
 - hotReloadable: true unless your changes touch vite.config.ts, package.json, tsconfig.json, postcss.config.js, or tailwind.config.js
 
 Each mutation is one of:
@@ -32,10 +38,17 @@ Each mutation is one of:
 RULES
 1. Preserve all existing state, content, and behavior unless the instruction explicitly says otherwise.
 2. Use "edit" with search/replace blocks for changes to existing files. For incremental changes, keep each block small — only the lines you need to change. Use multiple small blocks instead of one large block when changes are non-adjacent.
-3. EXCEPTION: For the very first mutation (when src/App.tsx is the welcome canvas) OR any explicit "rewrite from scratch" instruction, use ONE edit block with the entire current file content as search and the entire new file content as replace. This is the canonical way to fully replace a file.
+3. STRUCTURE — build a real React app, not a single-file dump. For the very first mutation (when src/App.tsx is the welcome canvas) OR any explicit "rewrite from scratch" instruction, decompose the app into multiple files using these conventions:
+   - src/components/<PascalCase>.tsx — one file per presentational or container component (e.g. NoteInput.tsx, NoteList.tsx, NoteItem.tsx). Each component owns its own JSX + Tailwind. Props are typed with an explicit interface.
+   - src/hooks/use<PascalCase>.ts — one file per custom hook that encapsulates stateful logic, persistence, or side effects (e.g. useNotes.ts wrapping useHostState + add/remove/toggle helpers). Hooks return a small typed object, not a tuple of 10 things.
+   - src/lib/<kebab-case>.ts — pure utilities (formatters, parsers, id generators). No React imports.
+   - src/App.tsx — STAYS THIN. Imports from the above, composes layout, sets the top-level container. Aim for ≤ 40 lines. App.tsx must not contain feature logic; it is a composition root.
+   Use "create" mutations for each new file and a single "edit" replacing src/App.tsx with the thin composition root. The first mutation typically produces 3–5 "create" entries plus one App.tsx "edit".
+
+3b. SUBSEQUENT mutations — scope every change to the smallest file it can live in. If a feature touches only NoteItem.tsx, edit NoteItem.tsx; do NOT edit App.tsx unless layout or wiring genuinely changed. Add a new component file when a new visual element is non-trivial; add a new hook when state logic grows beyond ~10 lines. Do not over-fragment — a component <15 lines used in exactly one place can stay inline.
 4. If you add an import, place it in its own small block at the top of the file.
 5. Use Tailwind utility classes for styling — they are already configured in the WC seed.
-6. For persistent app data (notes, todos, settings) use \`useHostState<T>(key, initial)\` imported from './hostState'. For ephemeral form state (e.g. the current input value), use plain useState.
+6. For persistent app data (notes, todos, settings) use \`useHostState<T>(key, initial)\` from the hostState module. Import path depends on the file's location: from src/App.tsx use \`./hostState\`; from src/components/X.tsx or src/hooks/useX.ts use \`../hostState\`. For ephemeral form state (e.g. the current input value), use plain useState. Custom hooks should encapsulate the useHostState call so components only see a clean domain-level API (e.g. \`useNotes()\` returning \`{ notes, add, remove }\`).
 7. summary: one short sentence, past tense. Example: "Added a dark mode toggle to the header."
 8. DO NOT modify src/main.tsx, src/observer.ts, or src/hostState.ts. These are infrastructure files — main.tsx is the entrypoint, observer.ts feeds usage analytics to the host, and hostState.ts provides the persistent state hook. Changes there will break the system.
 9. If an image is attached to the user's message, treat it as the visual target — match its layout, colors, typography, and component composition as closely as possible using Tailwind. The text instruction (if any) refines or constrains the intent; if no instruction is given, infer the design intent from the image alone.

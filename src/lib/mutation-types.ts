@@ -15,6 +15,11 @@ export const mutationItemSchema = z.object({
 export const mutationSchema = z.object({
   mutations: z.array(mutationItemSchema),
   summary: z.string(),
+  // Imperative steps the user can perform to confirm the change works
+  // end-to-end. Format: "Try: <action>. You should see: <outcome>."
+  // The downstream UI surfaces this as a post-apply toast so the user
+  // never has to guess whether the change actually took effect.
+  verification: z.string(),
   hotReloadable: z.boolean(),
 });
 

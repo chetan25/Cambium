@@ -27,6 +27,36 @@ const QUICK_PICKS = [
     prompt:
       "A pomodoro timer with a 25-minute focus and 5-minute break cycle, start/pause/reset controls, and a count of completed sessions. Persist the session count.",
   },
+  {
+    label: "Expenses",
+    prompt:
+      "An expense tracker: a number input for amount, a text input for description, and an Add button. Show a list of entries with amount and description, and a running total at the bottom. Persist entries.",
+  },
+  {
+    label: "Kanban",
+    prompt:
+      "A small kanban board with three columns — Todo, Doing, Done. Each column has an Add input to create a card and shows its cards. Each card has Left and Right buttons to move it between adjacent columns. Persist cards and which column they are in.",
+  },
+  {
+    label: "Markdown notes",
+    prompt:
+      "A markdown editor: a textarea on the left and a live preview on the right that renders bold, italics, headings, links, and bullet lists. A list of saved notes at the top by title; clicking one loads it into the editor. Persist notes.",
+  },
+  {
+    label: "Flashcards",
+    prompt:
+      "A flashcards study app: front and back text inputs with an Add Card button, plus a study view that shows one card at a time. Click the card to flip it. Buttons for 'Got it' and 'Again' move to the next card. Persist the deck.",
+  },
+  {
+    label: "Reading list",
+    prompt:
+      "A reading list: input for title and URL, an Add button, and a list of saved items. Each item has a checkbox to mark as read and shows the title as a clickable link. Persist items.",
+  },
+  {
+    label: "Mood journal",
+    prompt:
+      "A daily mood journal: pick a mood from a small set of emoji buttons, optionally add a one-line note, and save the entry with today's date. Show a list of past entries grouped by date. Persist entries.",
+  },
 ];
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5 MB — matches Anthropic's per-image cap

@@ -5,6 +5,8 @@ import { ChatCircle } from "@phosphor-icons/react/dist/ssr/ChatCircle";
 import { X } from "@phosphor-icons/react/dist/ssr/X";
 import { ColumnsPlusLeft } from "@phosphor-icons/react/dist/ssr/ColumnsPlusLeft";
 import { Sparkle } from "@phosphor-icons/react/dist/ssr/Sparkle";
+import { Trash } from "@phosphor-icons/react/dist/ssr/Trash";
+import { Check } from "@phosphor-icons/react/dist/ssr/Check";
 import { useAppStore } from "@/store/appStore";
 import type { MutationOrchestrator } from "@/lib/MutationOrchestrator";
 import type { SelfMutator } from "@/lib/SelfMutator";
@@ -32,6 +34,7 @@ interface Props {
   selfMutator: SelfMutator | null;
   suggestionEngine: SuggestionEngine | null;
   fs: FileSystemManager | null;
+  onReset: () => void;
 }
 
 export function FullShell({
@@ -39,6 +42,7 @@ export function FullShell({
   selfMutator,
   suggestionEngine,
   fs,
+  onReset,
 }: Props) {
   const wcUrl = useAppStore((s) => s.wcUrl);
   const wcStatus = useAppStore((s) => s.wcStatus);
@@ -48,6 +52,8 @@ export function FullShell({
   const suggestions = useAppStore((s) => s.suggestions);
   const setViewMode = useAppStore((s) => s.setViewMode);
   const autoFixNotice = useAppStore((s) => s.autoFixNotice);
+  const successNotice = useAppStore((s) => s.successNotice);
+  const setSuccessNotice = useAppStore((s) => s.setSuccessNotice);
 
   const {
     applying,
@@ -63,6 +69,14 @@ export function FullShell({
   // Suggestions that have already been "seen" (toast cycle finished).
   // They stay in the store but appear as a FAB badge instead of a toast.
   const [seenIds, setSeenIds] = useState<Set<string>>(new Set());
+
+  // Auto-dismiss the success notice after 12s so it doesn't pile up
+  // across multiple mutations. The user can also close it manually.
+  useEffect(() => {
+    if (!successNotice) return;
+    const id = setTimeout(() => setSuccessNotice(null), 12_000);
+    return () => clearTimeout(id);
+  }, [successNotice, setSuccessNotice]);
 
   // Open drawer automatically when a new pending mutation appears.
   useEffect(() => {
@@ -131,6 +145,30 @@ export function FullShell({
         </div>
       )}
 
+      {successNotice && (
+        <div className="fade-up absolute left-1/2 top-4 z-20 flex max-w-[560px] -translate-x-1/2 items-start gap-3 rounded-2xl border border-emerald-200 bg-white/95 px-4 py-3 text-[12.5px] leading-relaxed text-emerald-900 shadow-[0_12px_40px_-12px_rgba(5,150,105,0.35)]">
+          <span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-emerald-100 text-emerald-700">
+            <Check size={12} weight="bold" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-emerald-700">
+              Change applied — verify it
+            </div>
+            <div className="mt-0.5 break-words text-zinc-800">
+              {successNotice}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setSuccessNotice(null)}
+            aria-label="Dismiss"
+            className="grid size-6 shrink-0 place-items-center rounded-md text-emerald-700 hover:bg-emerald-50 active:scale-[0.94]"
+          >
+            <X size={12} weight="bold" />
+          </button>
+        </div>
+      )}
+
       {!drawerOpen && toastSuggestion && (
         <div className="fade-up pointer-events-auto absolute right-4 top-4 z-20 w-[340px]">
           <SuggestionCard
@@ -187,6 +225,15 @@ export function FullShell({
               className="grid size-7 place-items-center rounded-md text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800 active:scale-[0.92]"
             >
               <ColumnsPlusLeft size={14} weight="regular" />
+            </button>
+            <button
+              type="button"
+              onClick={onReset}
+              aria-label="Clear all session data"
+              title="Clear all session data"
+              className="grid size-7 place-items-center rounded-md text-zinc-500 hover:bg-red-50 hover:text-red-600 active:scale-[0.92]"
+            >
+              <Trash size={14} weight="regular" />
             </button>
             <button
               type="button"

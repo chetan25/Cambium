@@ -60,6 +60,12 @@ export function MutationLog({ onRestore }: Props) {
                       current
                     </span>
                   )}
+                  {process.env.NODE_ENV === "development" && (
+                    <PathSummary
+                      applied={entry.appliedPaths}
+                      failed={entry.failedPaths}
+                    />
+                  )}
                 </div>
               </div>
               {restorable && !isLatest && (
@@ -86,4 +92,33 @@ function relativeTime(t: number): string {
   if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
   if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
   return new Date(t).toLocaleString();
+}
+
+// Shows the actual paths the mutation wrote/failed on, hover for full list.
+// Helps the user notice when the LLM's summary doesn't match the real diff
+// (e.g. "Added auto-increment" but only a helper file was created).
+function PathSummary({
+  applied,
+  failed,
+}: {
+  applied?: string[];
+  failed?: string[];
+}) {
+  const a = applied ?? [];
+  const f = failed ?? [];
+  if (a.length === 0 && f.length === 0) return null;
+  const title = [
+    a.length ? `Touched:\n  ${a.join("\n  ")}` : "",
+    f.length ? `Skipped (blocks failed):\n  ${f.join("\n  ")}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  return (
+    <span title={title} className="cursor-help text-zinc-500">
+      {a.length > 0 && <span>{a.length} file{a.length === 1 ? "" : "s"}</span>}
+      {f.length > 0 && (
+        <span className="ml-1 text-amber-600">+{f.length} skipped</span>
+      )}
+    </span>
+  );
 }

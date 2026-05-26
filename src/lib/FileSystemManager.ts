@@ -67,24 +67,33 @@ export class FileSystemManager {
   }
 
   // Exact-string find-and-replace, per block, in a single file. Returns the
-  // indices of any blocks whose SEARCH did not match — the caller decides
-  // whether to surface a partial-failure to the user or roll back.
+  // indices of any blocks whose SEARCH did not match. Per-file atomic: if
+  // any block fails to match, we leave the file untouched so the next
+  // propose sees a clean state rather than a partially-rewritten file.
   async applyBlocks(
     path: string,
     blocks: SearchReplaceBlock[],
   ): Promise<ApplyBlocksResult> {
-    let content = await this.readFile(path);
+    const original = await this.readFile(path);
+    let content = original;
     const failed: number[] = [];
 
     blocks.forEach((block, index) => {
       if (content.includes(block.search)) {
-        content = content.replace(block.search, block.replace);
+        // String.prototype.replace interprets $$, $&, $`, $', and $N in the
+        // replacement string as special tokens even when the pattern is a
+        // plain string. The LLM doesn't know to escape these, so currency
+        // (`$50`) and any regex-like text get silently corrupted. Escape
+        // every $ in the replacement so the literal text is preserved.
+        content = content.replace(block.search, escapeReplacement(block.replace));
       } else {
         failed.push(index);
       }
     });
 
-    await this.container.fs.writeFile(path, content);
+    if (failed.length === 0) {
+      await this.container.fs.writeFile(path, content);
+    }
     return { ok: failed.length === 0, failed };
   }
 
@@ -108,6 +117,7 @@ export class FileSystemManager {
   // any files in the current tree that aren't in the snapshot. Used to
   // restore a historical version of the app.
   async overwriteSrc(files: Record<string, string>): Promise<void> {
+
     const current = await this.getAppSnapshot();
     const incoming = new Set(Object.keys(files));
 
@@ -125,4 +135,12 @@ export class FileSystemManager {
       }
     }
   }
+}
+
+// Doubles every "$" in the replacement string. JS's String.prototype.replace
+// interprets $$, $&, $`, $', and $N as special tokens — even when the search
+// pattern is a plain string. Doubling each $ unescapes back to a single $
+// after replace runs, so the literal text is preserved.
+function escapeReplacement(replace: string): string {
+  return replace.replace(/\$/g, "$$$$");
 }

@@ -97,6 +97,7 @@ export class MutationOrchestrator {
   async apply(pending: PendingMutation): Promise<ApplyResult> {
     await this.fs.checkpoint(pending.id);
     const failures: ApplyResult["failures"] = [];
+    const appliedPaths: string[] = [];
     let appliedCount = 0;
 
     for (const m of pending.parsed.mutations) {
@@ -109,6 +110,7 @@ export class MutationOrchestrator {
           const result = await this.fs.applyBlocks(m.path, m.blocks);
           if (result.ok) {
             appliedCount++;
+            appliedPaths.push(m.path);
           } else {
             failures.push({
               path: m.path,
@@ -122,9 +124,11 @@ export class MutationOrchestrator {
           }
           await this.fs.createFile(m.path, m.content);
           appliedCount++;
+          appliedPaths.push(m.path);
         } else if (m.type === "delete") {
           await this.fs.deleteFile(m.path);
           appliedCount++;
+          appliedPaths.push(m.path);
         }
       } catch (e) {
         failures.push({
@@ -132,6 +136,27 @@ export class MutationOrchestrator {
           reason: e instanceof Error ? e.message : String(e),
         });
       }
+    }
+
+    // Structured trace so DevTools shows exactly what changed on disk. The
+    // LLM's summary is its own claim about the change; this is the ground
+    // truth for what got written. Dev-only — production users shouldn't see
+    // this in their console.
+    if (process.env.NODE_ENV === "development") {
+      console.info(
+        "[Orchestrator] apply complete",
+        JSON.stringify(
+          {
+            id: pending.id,
+            summary: pending.parsed.summary,
+            appliedPaths,
+            failedPaths: failures.map((f) => f.path),
+            failures,
+          },
+          null,
+          2,
+        ),
+      );
     }
 
     if (appliedCount === 0 && pending.parsed.mutations.length > 0) {
@@ -154,6 +179,8 @@ export class MutationOrchestrator {
         appliedAt: Date.now(),
         failures: failures.length,
         snapshotId,
+        appliedPaths,
+        failedPaths: failures.map((f) => f.path),
       });
     } catch (e) {
       // Persistence failure should not block the UI mutation. Log only.

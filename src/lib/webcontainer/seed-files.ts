@@ -186,7 +186,7 @@ export function useHostState<T>(key: string, initial: T): [T, (v: T) => void] {
 // flushes (not pure time) so demo cadence is reliable; a 10s backstop catches
 // trickling sessions. All handlers are try-wrapped so a buggy listener can
 // never break the user's app.
-const OBSERVER_TS = `type Event = Record<string, unknown> & { t: number }
+const OBSERVER_TS = `type Event = Record<string, unknown> & { t: number; ts: number }
 
 const events: Event[] = []
 const SESSION_START = Date.now()
@@ -205,7 +205,11 @@ const flush = () => {
 }
 
 const push = (e: Record<string, unknown>) => {
-  events.push({ ...e, t: Date.now() - SESSION_START })
+  const now = Date.now()
+  // t: session-relative for chronological ordering inside an analysis batch.
+  // ts: absolute wall clock so the host can scope events to project epochs
+  // (e.g. "only events newer than the most recent applied mutation").
+  events.push({ ...e, t: now - SESSION_START, ts: now })
   if (events.length >= FLUSH_THRESHOLD) flush()
 }
 

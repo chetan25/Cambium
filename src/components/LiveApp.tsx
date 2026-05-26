@@ -1,6 +1,5 @@
 "use client";
 
-import { Terminal as TerminalIcon } from "@phosphor-icons/react/dist/ssr/Terminal";
 import { useAppStore } from "@/store/appStore";
 
 const PROGRESS_MESSAGE: Record<string, string> = {
@@ -15,13 +14,12 @@ const PROGRESS_MESSAGE: Record<string, string> = {
 export function LiveApp() {
   const url = useAppStore((s) => s.wcUrl);
   const status = useAppStore((s) => s.wcStatus);
-  const log = useAppStore((s) => s.terminalLog);
 
   const isProgressing =
     status !== "idle" && status !== "ready" && status !== "error";
 
   return (
-    <div className="grid h-full grid-rows-[1fr_auto] border-l border-zinc-200 bg-zinc-50">
+    <div className="grid h-full grid-rows-[1fr] border-l border-zinc-200 bg-zinc-50">
       <div className="relative overflow-hidden bg-white">
         {url ? (
           <iframe
@@ -46,29 +44,13 @@ export function LiveApp() {
               )}
               {status === "error" && (
                 <div className="text-[11.5px] text-red-600">
-                  Check the terminal drawer below for details.
+                  WebContainer failed to start. Check the browser console for details.
                 </div>
               )}
             </div>
           </div>
         )}
       </div>
-      <details className="border-t border-zinc-200 bg-zinc-950 text-zinc-100">
-        <summary className="flex cursor-pointer select-none items-center gap-2 px-3 py-2 text-[11px] text-zinc-400 hover:text-zinc-200">
-          <TerminalIcon size={12} weight="regular" />
-          <span className="font-medium tracking-tight">Terminal</span>
-          {log.length > 0 && (
-            <span className="font-mono text-[10px] text-zinc-500">
-              {log.length.toLocaleString()} chars
-            </span>
-          )}
-        </summary>
-        <pre className="scrollbar-thin max-h-48 overflow-auto whitespace-pre-wrap break-all px-3 pb-2 font-mono text-[11px] leading-relaxed">
-          {log || (
-            <span className="text-zinc-500">waiting for output</span>
-          )}
-        </pre>
-      </details>
     </div>
   );
 }

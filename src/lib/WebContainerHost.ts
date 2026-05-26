@@ -65,7 +65,14 @@ export class WebContainerHost {
       }
 
       this.setStatus("installing");
-      const install = await this.container.spawn("npm", ["install"]);
+      // Preflight: a resumed snapshot may import packages the seed's
+      // package.json doesn't know about (e.g. framer-motion added in a
+      // prior session). Detect and include them in the first install so
+      // Vite never sees a missing-import error.
+      const missingDeps = await this.detectMissingDeps();
+      const installArgs =
+        missingDeps.length > 0 ? ["install", ...missingDeps] : ["install"];
+      const install = await this.container.spawn("npm", installArgs);
       install.output.pipeTo(this.writer());
       const code = await install.exit;
       if (code !== 0) {
@@ -112,4 +119,87 @@ export class WebContainerHost {
     const content = await this.container.fs.readFile(path, "utf-8");
     await this.container.fs.writeFile(path, content);
   }
+
+  // Scans src/ for bare imports/requires that aren't declared in the
+  // mounted package.json. Returns the package names so the caller can
+  // include them in the boot-time install and avoid Vite's missing-import
+  // error overlay.
+  private async detectMissingDeps(): Promise<string[]> {
+    if (!this.container) return [];
+
+    let pkgRaw: string;
+    try {
+      pkgRaw = await this.container.fs.readFile("package.json", "utf-8");
+    } catch {
+      return [];
+    }
+
+    let known: Set<string>;
+    try {
+      const pkg = JSON.parse(pkgRaw) as {
+        dependencies?: Record<string, string>;
+        devDependencies?: Record<string, string>;
+        peerDependencies?: Record<string, string>;
+      };
+      known = new Set([
+        ...Object.keys(pkg.dependencies ?? {}),
+        ...Object.keys(pkg.devDependencies ?? {}),
+        ...Object.keys(pkg.peerDependencies ?? {}),
+      ]);
+    } catch {
+      return [];
+    }
+
+    const SOURCE_EXT = /\.(?:t|j)sx?$/;
+    const IGNORE = new Set(["node_modules", "dist", ".vite", "build"]);
+    const IMPORT_RE =
+      /(?:import\s+(?:[\w*${}\s,]+\s+from\s+)?|require\s*\(\s*)["']([^"']+)["']/g;
+
+    const found = new Set<string>();
+    const walk = async (dir: string) => {
+      let entries: Array<{ name: string; isDirectory: () => boolean }>;
+      try {
+        entries = (await this.container!.fs.readdir(dir, {
+          withFileTypes: true,
+        })) as typeof entries;
+      } catch {
+        return;
+      }
+      for (const e of entries) {
+        if (IGNORE.has(e.name)) continue;
+        const p = `${dir}/${e.name}`;
+        if (e.isDirectory()) {
+          await walk(p);
+        } else if (SOURCE_EXT.test(e.name)) {
+          let content: string;
+          try {
+            content = await this.container!.fs.readFile(p, "utf-8");
+          } catch {
+            continue;
+          }
+          for (const m of content.matchAll(IMPORT_RE)) {
+            const spec = m[1];
+            if (spec.startsWith(".") || spec.startsWith("/")) continue;
+            const pkg = parsePackageName(spec);
+            if (pkg && !known.has(pkg)) found.add(pkg);
+          }
+        }
+      }
+    };
+
+    await walk("src");
+    return [...found];
+  }
+}
+
+// "lodash/debounce" -> "lodash"
+// "@radix-ui/react-dialog" -> "@radix-ui/react-dialog"
+// "@scope/pkg/sub" -> "@scope/pkg"
+function parsePackageName(spec: string): string | null {
+  const parts = spec.split("/");
+  if (spec.startsWith("@")) {
+    if (parts.length < 2) return null;
+    return `${parts[0]}/${parts[1]}`;
+  }
+  return parts[0] || null;
 }

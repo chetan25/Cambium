@@ -29,7 +29,10 @@ export function useMutationFlow({
   fs,
 }: Deps) {
   const [applying, setApplying] = useState(false);
-  const [activePatternId, setActivePatternId] = useState<string | null>(null);
+  // Track the full pattern object (not just its id) so apply can mark the
+  // semantic feature as "built" — pattern.id is a one-shot UUID and won't
+  // survive into the next analysis pass.
+  const [activePattern, setActivePattern] = useState<Pattern | null>(null);
 
   useEffect(() => {
     SessionStore.getMutationLog().then((entries) => {
@@ -47,7 +50,7 @@ export function useMutationFlow({
     store.setPartial(null);
     store.setPending(null);
     store.setStreaming(true);
-    setActivePatternId(options?.pattern?.id ?? null);
+    setActivePattern(options?.pattern ?? null);
     try {
       const onPartial = (partial: Parameters<typeof store.setPartial>[0]) =>
         useAppStore.getState().setPartial(partial);
@@ -59,7 +62,7 @@ export function useMutationFlow({
     } catch (e) {
       useAppStore.getState().setLastError((e as Error).message);
       useAppStore.getState().setPartial(null);
-      setActivePatternId(null);
+      setActivePattern(null);
     } finally {
       useAppStore.getState().setStreaming(false);
     }
@@ -90,11 +93,28 @@ export function useMutationFlow({
       useAppStore.getState().setPending(null);
       useAppStore.getState().setPartial(null);
 
-      if (activePatternId) {
-        suggestionEngine?.markApplied(activePatternId);
-        useAppStore.getState().removeSuggestion(activePatternId);
-        setActivePatternId(null);
+      // Surface the LLM-provided verification so the user knows exactly
+      // how to confirm the change worked. Falls back to the summary if
+      // the model omitted verification (older responses won't have it).
+      const verification =
+        (pending.parsed as { verification?: string }).verification?.trim() ||
+        pending.parsed.summary;
+      if (verification) {
+        useAppStore.getState().setSuccessNotice(verification);
       }
+
+      if (activePattern) {
+        suggestionEngine?.markApplied(activePattern);
+        setActivePattern(null);
+      }
+
+      // Suggestions are tied to the app's state at the time they were
+      // inferred. Once a mutation changes the code, prior suggestions and
+      // the events that produced them describe a different project. Clear
+      // them and reset the analysis cycle so the next batch of events
+      // drives fresh inference against the new code.
+      useAppStore.getState().clearSuggestions();
+      suggestionEngine?.resetForMutation();
 
       if (result.failures.length > 0) {
         useAppStore
@@ -115,7 +135,7 @@ export function useMutationFlow({
   const reject = () => {
     useAppStore.getState().setPending(null);
     useAppStore.getState().setPartial(null);
-    setActivePatternId(null);
+    setActivePattern(null);
   };
 
   const approveSuggestion = (pattern: Pattern) => {
@@ -123,7 +143,7 @@ export function useMutationFlow({
   };
 
   const dismissSuggestion = (pattern: Pattern) => {
-    suggestionEngine?.dismiss(pattern.id);
+    suggestionEngine?.dismiss(pattern);
     useAppStore.getState().removeSuggestion(pattern.id);
   };
 

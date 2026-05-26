@@ -1,6 +1,11 @@
 "use client";
 
+import { useEffect } from "react";
 import { ArrowsClockwise } from "@phosphor-icons/react/dist/ssr/ArrowsClockwise";
+import { ChatCircle } from "@phosphor-icons/react/dist/ssr/ChatCircle";
+import { Trash } from "@phosphor-icons/react/dist/ssr/Trash";
+import { Check } from "@phosphor-icons/react/dist/ssr/Check";
+import { X } from "@phosphor-icons/react/dist/ssr/X";
 import { useAppStore } from "@/store/appStore";
 import type { MutationOrchestrator } from "@/lib/MutationOrchestrator";
 import type { SelfMutator } from "@/lib/SelfMutator";
@@ -37,6 +42,15 @@ export function ControlPanel({
   const pending = useAppStore((s) => s.pendingMutation);
   const suggestions = useAppStore((s) => s.suggestions);
   const autoFixNotice = useAppStore((s) => s.autoFixNotice);
+  const setViewMode = useAppStore((s) => s.setViewMode);
+  const successNotice = useAppStore((s) => s.successNotice);
+  const setSuccessNotice = useAppStore((s) => s.setSuccessNotice);
+
+  useEffect(() => {
+    if (!successNotice) return;
+    const id = setTimeout(() => setSuccessNotice(null), 12_000);
+    return () => clearTimeout(id);
+  }, [successNotice, setSuccessNotice]);
 
   const {
     applying,
@@ -68,7 +82,27 @@ export function ControlPanel({
             Talk to your app. Watch it grow.
           </p>
         </div>
-        <StatusBadge status={wcStatus} />
+        <div className="flex items-center gap-1.5">
+          <StatusBadge status={wcStatus} />
+          <button
+            type="button"
+            onClick={() => setViewMode("full", true)}
+            aria-label="Switch to bubble view"
+            title="Switch to bubble view"
+            className="grid size-7 place-items-center rounded-md text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800 active:scale-[0.92]"
+          >
+            <ChatCircle size={14} weight="regular" />
+          </button>
+          <button
+            type="button"
+            onClick={onReset}
+            aria-label="Clear all session data"
+            title="Clear all session data"
+            className="grid size-7 place-items-center rounded-md text-zinc-500 hover:bg-red-50 hover:text-red-600 active:scale-[0.92]"
+          >
+            <Trash size={14} weight="regular" />
+          </button>
+        </div>
       </header>
 
       {wcStatus === "idle" && (
@@ -108,6 +142,30 @@ export function ControlPanel({
         <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50/60 px-3 py-2 text-[11.5px] text-emerald-800">
           <span className="size-1.5 animate-pulse rounded-full bg-emerald-500" />
           <span className="font-mono">{autoFixNotice}</span>
+        </div>
+      )}
+
+      {successNotice && (
+        <div className="fade-up flex items-start gap-2.5 rounded-xl border border-emerald-200 bg-emerald-50/70 px-3 py-2.5 text-[12px] leading-relaxed text-emerald-900">
+          <span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-emerald-100 text-emerald-700">
+            <Check size={11} weight="bold" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-emerald-700">
+              Change applied — verify it
+            </div>
+            <div className="mt-0.5 break-words text-zinc-800">
+              {successNotice}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setSuccessNotice(null)}
+            aria-label="Dismiss"
+            className="grid size-5 shrink-0 place-items-center rounded text-emerald-700 hover:bg-emerald-100 active:scale-[0.94]"
+          >
+            <X size={10} weight="bold" />
+          </button>
         </div>
       )}
 

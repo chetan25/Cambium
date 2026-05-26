@@ -14,6 +14,7 @@ import { useAppStore } from "@/store/appStore";
 import { ControlPanel } from "@/components/ControlPanel";
 import { LiveApp } from "@/components/LiveApp";
 import { FullShell } from "@/components/FullShell";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 
 type WindowGlobals = {
   __wc: WebContainerHost;
@@ -82,6 +83,38 @@ export default function Home() {
     SessionStore.purgeEventsOlderThan(cutoff).catch(() => {});
   }, []);
 
+  // Restore the view mode the user was in last time so a refresh doesn't
+  // dump them back on the ControlPanel. Persisted in localStorage so it's
+  // synchronous and doesn't require a round-trip to IDB before first paint.
+  useEffect(() => {
+    try {
+      const savedView = window.localStorage.getItem("cambium-view-mode");
+      const savedOverride =
+        window.localStorage.getItem("cambium-view-override") === "true";
+      if (savedView === "full" || savedView === "split") {
+        useAppStore.getState().setViewMode(savedView, savedOverride);
+      }
+    } catch {
+      // localStorage can throw in private modes / quota-exceeded — ignore.
+    }
+    const unsubscribe = useAppStore.subscribe((state, prev) => {
+      try {
+        if (state.viewMode !== prev.viewMode) {
+          window.localStorage.setItem("cambium-view-mode", state.viewMode);
+        }
+        if (state.manualViewOverride !== prev.manualViewOverride) {
+          window.localStorage.setItem(
+            "cambium-view-override",
+            String(state.manualViewOverride),
+          );
+        }
+      } catch {
+        // ignore write failures
+      }
+    });
+    return unsubscribe;
+  }, []);
+
   const boot = async () => {
     if (hostRef.current) return;
     const store = useAppStore.getState();
@@ -144,6 +177,13 @@ export default function Home() {
       const mutator = new SelfMutator(orch);
 
       engine.getCurrentCode = () => fsInstance.getAppSnapshot();
+      engine.getLastMutationAt = () => {
+        const log = useAppStore.getState().mutationLog;
+        if (log.length === 0) return 0;
+        // mutationLog is sorted by appliedAt asc in SessionStore.getMutationLog,
+        // so the tail is the most recent.
+        return log[log.length - 1].appliedAt;
+      };
       engine.onSuggestion = (patterns) => {
         useAppStore.getState().addSuggestions(patterns);
       };
@@ -175,37 +215,87 @@ export default function Home() {
     }
   };
 
-  const reset = async () => {
-    const ok = window.confirm(
-      "Reset to the welcome canvas? Saved code snapshot, app data, events, and mutation log will be cleared.",
-    );
-    if (!ok) return;
+  // Auto-boot when there's a saved snapshot, so a refresh doesn't leave the
+  // user staring at a "Click Boot" page. boot() is idempotent — early-returns
+  // if already booted — so a second user-initiated click is also safe.
+  const bootRef = useRef(boot);
+  bootRef.current = boot;
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const snap = await SessionStore.loadLatestSnapshot();
+        if (!cancelled && snap) {
+          bootRef.current();
+        }
+      } catch {
+        // If snapshot loading fails, fall through to the manual Boot button.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const [resetOpen, setResetOpen] = useState(false);
+  const openReset = () => setResetOpen(true);
+  const cancelReset = () => setResetOpen(false);
+  const confirmReset = async () => {
+    setResetOpen(false);
     await SessionStore.clearAll();
+    // Also drop the persisted view mode so a fresh session lands on the
+    // welcome ControlPanel rather than an empty FullShell.
+    try {
+      window.localStorage.removeItem("cambium-view-mode");
+      window.localStorage.removeItem("cambium-view-override");
+    } catch {
+      // ignore
+    }
     window.location.reload();
   };
 
+  const resetDialog = (
+    <ConfirmDialog
+      open={resetOpen}
+      title="Clear all session data?"
+      description="The saved code snapshot, app state, recorded events, and mutation log will all be deleted. This cannot be undone."
+      confirmLabel="Clear all data"
+      cancelLabel="Cancel"
+      destructive
+      onConfirm={confirmReset}
+      onCancel={cancelReset}
+    />
+  );
+
   if (viewMode === "full") {
     return (
-      <FullShell
-        orchestrator={orchestrator}
-        selfMutator={selfMutator}
-        suggestionEngine={suggestionEngine}
-        fs={fs}
-      />
+      <>
+        <FullShell
+          orchestrator={orchestrator}
+          selfMutator={selfMutator}
+          suggestionEngine={suggestionEngine}
+          fs={fs}
+          onReset={openReset}
+        />
+        {resetDialog}
+      </>
     );
   }
 
   return (
-    <main className="grid h-[100dvh] grid-cols-[minmax(380px,38%)_1fr]">
-      <ControlPanel
-        orchestrator={orchestrator}
-        selfMutator={selfMutator}
-        suggestionEngine={suggestionEngine}
-        fs={fs}
-        onBoot={boot}
-        onReset={reset}
-      />
-      <LiveApp />
-    </main>
+    <>
+      <main className="grid h-[100dvh] grid-cols-[minmax(380px,38%)_1fr]">
+        <ControlPanel
+          orchestrator={orchestrator}
+          selfMutator={selfMutator}
+          suggestionEngine={suggestionEngine}
+          fs={fs}
+          onBoot={boot}
+          onReset={openReset}
+        />
+        <LiveApp />
+      </main>
+      {resetDialog}
+    </>
   );
 }

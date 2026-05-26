@@ -19,6 +19,12 @@ export interface MutationLogEntry {
   // Snapshot ID created by this mutation. Allows clicking a log entry to
   // restore that point-in-time.
   snapshotId?: string;
+  // Paths actually written to the WC filesystem during this apply. Lets the
+  // UI show "this mutation touched X" so the user can sanity-check the
+  // LLM's summary against the real diff.
+  appliedPaths?: string[];
+  // Paths the LLM proposed but whose blocks failed to match (atomic skip).
+  failedPaths?: string[];
 }
 
 let dbPromise: Promise<IDBPDatabase> | null = null;

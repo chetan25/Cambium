@@ -8,7 +8,7 @@ export const maxDuration = 60;
 const OBSERVE_MODEL =
   process.env.OPENROUTER_OBSERVE_MODEL ?? "anthropic/claude-sonnet-4.5";
 
-const SYSTEM_PROMPT = `You watch how a user interacts with a small React app and propose features the app should add to better fit their behavior.
+const SYSTEM_PROMPT = `You watch how a user interacts with a small React app and propose features the app should add to better fit their behavior. The proposals you generate are handed to a downstream code-mutating model — it will only build what your description literally says. Ambiguity in your output produces a wrong feature.
 
 You receive:
 - EVENTS: an array of recent user interactions (input typing, clicks, keypresses)
@@ -26,18 +26,39 @@ REQUIREMENTS BEFORE SURFACING A PATTERN
 - Your confidence must be ≥ 0.70
 - The proposed feature must be SMALL (one self-contained change, not a redesign)
 - The proposed feature must NOT contradict the existing app's purpose
+- The proposed feature must have EXACTLY ONE reasonable interpretation. If a human reading your proposed_feature could plausibly build two materially different versions of it, REWRITE the description until they cannot — or drop the pattern.
+
+PROPOSED_FEATURE WRITING RULES
+Every proposed_feature MUST specify all three:
+  1. TRIGGER — the exact user action or app state that activates the feature ("when the user submits a note that…", "when the user opens the app", "after the user pauses for >5s").
+  2. BEHAVIOR — what the app does in response, in concrete, testable terms ("pre-fill the input with '(N+1). '", "show a banner with text X", "convert the typed string '[ ]' into a checkbox element"). Avoid vague verbs like "support", "handle", "improve".
+  3. OBSERVABLE OUTCOME — what the user will SEE change so they can verify it works ("the input value displays 'N+1. ' immediately after submit", "a new <header> element appears at the top").
+
+If the signal you observed admits multiple readings, pick the LEAST INVASIVE one (the one that adds the smallest visible change) and write the proposed_feature for THAT reading specifically. Never describe a feature in language that could be read as "extend the pattern" OR "automate the pattern" OR "augment with related feature" — pick one explicitly.
+
+GOOD vs BAD proposed_feature examples (for a TODO list app where user typed "TODO:" 5 times):
+- BAD:  "Add TODO support to the input"  (vague; could mean autocomplete, conversion, filtering, badges, etc.)
+- BAD:  "Convert TODO: prefixes to checkboxes"  (trigger and behavior are clear but observable outcome is missing — does it happen on submit? on type? for existing notes too?)
+- GOOD: "When the user submits a note that starts with 'TODO:', strip the 'TODO:' prefix and render that note with a checkbox to its left that toggles a 'done' style on the note text. Newly typed 'TODO:' notes get this treatment on submit; existing non-TODO notes are unchanged."
+
+GOOD vs BAD examples for the numbered-list case (user typed "1. foo", "2. bar", "3. baz"):
+- BAD:  "Auto-increment numbered list items"  (does it pre-fill the next input? auto-prefix unrelated notes? convert old notes to numbered? all three?)
+- GOOD: "When the user submits a note whose text starts with the pattern '<digit>+. ' (e.g. '1. ', '12. '), parse the leading number N and pre-fill the input field with '(N+1). ' so the user can keep typing the next item without re-typing the number. The observable change is the input value showing '(N+1). ' immediately after submit; nothing else about the app changes."
+
+IMPLEMENTATION_HINT
+One sentence on HOW to implement it. Reference concrete file/component when possible (e.g. "in src/components/NoteInput.tsx, after onAdd is called in handleSubmit, regex-match the value and call setValue with the next number"). The downstream model has access to the same code you see — be specific about which file and which handler.
 
 RESPONSE
 {
   "patterns": [
     {
       "id": "<random uuid you generate>",
-      "observation": "Concrete description of what the user did. Include counts.",
+      "observation": "Concrete description of what the user did. Include counts and the exact strings/values where relevant.",
       "signal_strength": <integer count of occurrences>,
       "confidence": <0-1>,
-      "proposed_feature": "One sentence describing the feature to add.",
+      "proposed_feature": "One paragraph with TRIGGER + BEHAVIOR + OBSERVABLE OUTCOME per the rules above.",
       "complexity": "low" | "medium" | "high",
-      "implementation_hint": "One sentence on how to implement it, referencing concrete file/component if useful."
+      "implementation_hint": "One sentence referencing the concrete file/handler to modify."
     }
   ]
 }
@@ -56,7 +77,7 @@ export async function POST(req: Request) {
   let body: {
     events: unknown[];
     currentCode: Record<string, string>;
-    excludeIds?: string[];
+    excludeFeatures?: string[];
   };
   try {
     body = await req.json();
@@ -64,7 +85,7 @@ export async function POST(req: Request) {
     return Response.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const { events, currentCode, excludeIds } = body;
+  const { events, currentCode, excludeFeatures } = body;
   if (!Array.isArray(events)) {
     return Response.json({ error: "events must be an array" }, { status: 400 });
   }
@@ -84,8 +105,8 @@ export async function POST(req: Request) {
 
   const recentEvents = events.slice(-100);
   const excludeNote =
-    excludeIds && excludeIds.length > 0
-      ? `\n\nALREADY-PROPOSED feature ids (do NOT re-propose anything with the same intent): ${excludeIds.join(", ")}`
+    excludeFeatures && excludeFeatures.length > 0
+      ? `\n\nALREADY-SHOWN features (user already saw and either skipped or built these — do NOT re-propose anything with the same intent, even if rephrased):\n${excludeFeatures.map((f) => `- ${f}`).join("\n")}`
       : "";
 
   const openrouter = createOpenRouter({

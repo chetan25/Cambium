@@ -32,6 +32,14 @@ interface AppState {
   // Runtime auto-resolve banner ("Installing framer-motion…")
   autoFixNotice: string | null;
 
+  // Terminal drawer visibility toggle (persists for the session only).
+  terminalHidden: boolean;
+
+  // Verification banner shown after a successful mutation. Holds the
+  // LLM-generated "Try: X. You should see: Y." string so the user can
+  // immediately confirm the change works.
+  successNotice: string | null;
+
   // Actions — WC
   setWcStatus: (s: WCStatus) => void;
   setWcUrl: (u: string | null) => void;
@@ -59,6 +67,12 @@ interface AppState {
 
   // Actions — Runtime auto-resolve
   setAutoFixNotice: (notice: string | null) => void;
+
+  // Actions — Terminal
+  setTerminalHidden: (hidden: boolean) => void;
+
+  // Actions — Verification
+  setSuccessNotice: (notice: string | null) => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -79,13 +93,15 @@ export const useAppStore = create<AppState>((set) => ({
   viewMode: "split",
   manualViewOverride: false,
   autoFixNotice: null,
+  terminalHidden: false,
+  successNotice: null,
 
   setWcStatus: (s) => set({ wcStatus: s }),
   setWcUrl: (u) => set({ wcUrl: u }),
   setBootError: (e) => set({ bootError: e }),
   appendTerminal: (chunk) =>
     set((state) => ({
-      terminalLog: (state.terminalLog + chunk).slice(-32_000),
+      terminalLog: (state.terminalLog + stripAnsi(chunk)).slice(-32_000),
     })),
   setResumedFromSnapshot: (b) => set({ resumedFromSnapshot: b }),
 
@@ -117,4 +133,19 @@ export const useAppStore = create<AppState>((set) => ({
     })),
 
   setAutoFixNotice: (notice) => set({ autoFixNotice: notice }),
+
+  setTerminalHidden: (hidden) => set({ terminalHidden: hidden }),
+
+  setSuccessNotice: (notice) => set({ successNotice: notice }),
 }));
+
+// npm and Vite emit ANSI escape sequences for color, cursor positioning,
+// and progress bars. Without a real terminal emulator they render as
+// gibberish in <pre>, so we strip them at ingest. Also collapse stray
+// carriage returns that come from progress reflows.
+const ANSI_RE =
+  // eslint-disable-next-line no-control-regex
+  /[][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-PRZcf-ntqry=><]/g;
+function stripAnsi(input: string): string {
+  return input.replace(ANSI_RE, "").replace(/\r(?!\n)/g, "");
+}
