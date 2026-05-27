@@ -139,6 +139,17 @@ export function useMutationFlow({
   };
 
   const approveSuggestion = (pattern: Pattern) => {
+    // Acting on a suggestion (Build it) counts as taking action on it — drop
+    // it from the store so it doesn't reappear as a chat-drawer chip after
+    // the toast collapses. activePattern (held in local state below
+    // startProposal) keeps a reference so markApplied still fires on apply.
+    useAppStore.getState().removeSuggestion(pattern.id);
+    // Also tell the engine NOW (not after apply succeeds) that this feature
+    // is being acted on. Otherwise a maybeAnalyse() that fires during the
+    // proposal/diff/apply window has no exclusion for it and the LLM
+    // re-proposes the same feature under a fresh UUID — which then bypasses
+    // the id-based dedup in addSuggestions and shows up as a new toast.
+    suggestionEngine?.markApplied(pattern);
     startProposal(pattern.proposed_feature, { pattern });
   };
 

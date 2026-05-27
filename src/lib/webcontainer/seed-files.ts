@@ -225,6 +225,17 @@ document.addEventListener('input', (e) => {
   } catch {}
 })
 
+const isInteractive = (el: HTMLElement): boolean => {
+  if (['BUTTON', 'A', 'INPUT', 'SELECT', 'TEXTAREA', 'LABEL'].includes(el.tagName)) return true
+  if (el.hasAttribute('onclick')) return true
+  const role = el.getAttribute('role')
+  if (role === 'button' || role === 'link' || role === 'checkbox' || role === 'menuitem' || role === 'option' || role === 'tab') return true
+  try {
+    if (window.getComputedStyle(el).cursor === 'pointer') return true
+  } catch {}
+  return false
+}
+
 document.addEventListener('click', (e) => {
   try {
     const target = e.target as HTMLElement | null
@@ -233,8 +244,56 @@ document.addEventListener('click', (e) => {
       kind: 'click',
       tag: target.tagName,
       text: (target.textContent ?? '').slice(0, 50),
+      // false when the user clicked a content element (li/span/div/p) that has
+      // no handler or pointer cursor — a strong signal they expected something
+      // to happen and the app didn't respond.
+      interactive: isInteractive(target),
     })
   } catch {}
+})
+
+// Drag attempts — pointerdown + significant move + pointerup. Captures BOTH
+// successful drags (the app responded) AND attempted ones (the app didn't),
+// because the gesture itself reveals user intent regardless of outcome.
+let dragOrigin: { x: number; y: number; tag: string; text: string } | null = null
+
+document.addEventListener('pointerdown', (e) => {
+  try {
+    const target = e.target as HTMLElement | null
+    if (!target) return
+    dragOrigin = {
+      x: e.clientX,
+      y: e.clientY,
+      tag: target.tagName,
+      text: (target.textContent ?? '').slice(0, 50),
+    }
+  } catch {}
+})
+
+document.addEventListener('pointerup', (e) => {
+  try {
+    if (!dragOrigin) return
+    const dx = e.clientX - dragOrigin.x
+    const dy = e.clientY - dragOrigin.y
+    const distance = Math.round(Math.sqrt(dx * dx + dy * dy))
+    // 8px threshold filters out micro-jitter from imprecise clicks.
+    if (distance >= 8) {
+      const target = e.target as HTMLElement | null
+      push({
+        kind: 'drag',
+        from: { tag: dragOrigin.tag, text: dragOrigin.text },
+        to: target
+          ? { tag: target.tagName, text: (target.textContent ?? '').slice(0, 50) }
+          : null,
+        distance,
+        dx: Math.round(dx),
+        dy: Math.round(dy),
+      })
+    }
+    dragOrigin = null
+  } catch {
+    dragOrigin = null
+  }
 })
 
 document.addEventListener('keydown', (e) => {

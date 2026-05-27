@@ -271,7 +271,7 @@ export function FullShell({
                 className="flex items-center gap-2 rounded-xl border border-emerald-100 bg-emerald-50/40 px-3 py-2 text-[11.5px] text-emerald-800"
               >
                 <Sparkle size={12} weight="fill" />
-                <span className="truncate flex-1">{p.proposed_feature}</span>
+                <span className="truncate flex-1">{p.headline}</span>
                 <button
                   type="button"
                   onClick={() => handleApprove(p)}

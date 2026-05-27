@@ -1,57 +1,15 @@
 # Cambium
 
-_Talk to your app. Watch it grow._
+*Talk to your app. Watch it grow.*
 
-Cambium is a self-evolving frontend playground. You describe an app, it builds it. You use the app, it watches. It notices patterns in how you work and proposes features to match. You approve a change, and the running app rewrites itself — surgically, without a reload — while your existing state stays put.
+Cambium is a self-evolving frontend playground. You describe an app, it builds it. You use the app, it watches. It notices patterns in how you work and proposes features that match. You approve a change, and the running app rewrites itself — surgically, without a reload — while your existing state stays put.
 
-The name comes from the cambium layer in trees: the thin band of cells where new growth actually happens. The whole app is that layer.
-
-## Two ideas, one system
-
-**Talk to a running app (Idea B).**
-Most AI coding tools generate code into an editor. You then copy, paste, reload, and re-establish your state. Cambium keeps the app running. You type "make the sidebar collapsible." The model returns a surgical search/replace patch. Vite HMR fires. The sidebar collapses. Your notes are still there, your scroll position intact, the textarea you were typing into still focused.
-
-**A self-observing app (Idea D).**
-Every other AI tool is reactive — it waits for a prompt. Cambium is the opposite. While you use the app, a passive observer in the iframe records what you do (input, clicks, key presses). When enough new signal accumulates, the host asks the model: _given this code and these events, what feature should this app have that it doesn't?_ If the model finds a high-confidence pattern (≥0.70, ≥3 occurrences), a suggestion card slides into the control panel. You approve, the app rewrites itself the same way it would for a manual prompt.
-
-## What it actually does
-
-1. Boots an isolated Node runtime in the browser via WebContainers
-2. Mounts a Vite + React + Tailwind seed inside it
-3. Either starts from a welcome canvas or restores your last saved snapshot from IndexedDB
-4. Accepts a text prompt, a quick-pick template, OR a pasted/dropped image as the input
-5. Streams structured search/replace mutations from Claude (via OpenRouter) with prompt caching on the system + snapshot prefix
-6. Previews the diff before applying
-7. Applies via the WebContainer's filesystem API
-8. Vite HMR propagates the change without a full reload
-9. Auto-installs any missing npm package that Claude references but the seed doesn't have
-10. Persists the resulting file tree back to IndexedDB — every mutation becomes a restorable snapshot
-11. App state (notes, todos, settings) lives in a separate IDB layer — survives mutations and refreshes
-12. The iframe observer streams usage events to the host; the suggestion engine periodically asks the model to find behavioral patterns
-13. Approved patterns route through the same mutation pipeline as manual chat
-14. Switches to a full-screen layout with a floating chat once the app exists, so the running app gets center stage
-
-## Stack
-
-| Layer            | Choice                                                  |
-| ---------------- | ------------------------------------------------------- |
-| Framework        | Next.js 16 (App Router, TS, Turbopack)                  |
-| In-browser Node  | `@webcontainer/api`                                     |
-| AI gateway       | OpenRouter                                              |
-| LLM (mutate)     | `anthropic/claude-sonnet-4.5`                           |
-| LLM (observe)    | `anthropic/claude-sonnet-4.5`                           |
-| SDK              | Vercel AI SDK (`ai`) + `@openrouter/ai-sdk-provider`    |
-| Schema           | Zod                                                     |
-| State (host)     | Zustand                                                 |
-| Persistence      | IndexedDB via `idb`                                     |
-| Patch format     | Search/Replace blocks (Aider-style)                     |
-| Terminal         | `@xterm/xterm` + `@xterm/addon-fit`                     |
-| Icons            | `@phosphor-icons/react`                                 |
-| Styling          | Tailwind v4 (host) + Tailwind v3 (WC seed)              |
+The name comes from the cambium layer in trees: the thin band of cells where new growth happens. The whole app is that layer.
 
 ## Quick start
 
 Requirements:
+
 - Node 20+
 - A modern Chromium-based browser (WebContainers need COOP/COEP cross-origin isolation)
 - An OpenRouter API key with credit
@@ -64,113 +22,160 @@ echo "OPEN_ROUTER_API_KEY=sk-or-..." > .env.local
 npm run dev
 ```
 
-Open <http://localhost:3000>. Click **Boot WebContainer** (first boot installs Vite + React + Tailwind inside the WC, ~30–90s). Click a quick-pick (Notes / Todo / Habit tracker / Pomodoro) or type a custom instruction.
+Open [http://localhost:3000](http://localhost:3000). Click **Boot WebContainer** (first boot installs Vite + React + Tailwind inside the WC, ~30–90s). Pick a quick-pick (Notes, Todo list, Habit tracker, Pomodoro, Expenses, Kanban, Markdown notes, Flashcards, Reading list, Mood journal) or type a custom instruction.
 
-Optional env overrides for the model slugs:
+Optional env overrides:
 
 ```bash
 OPENROUTER_MUTATE_MODEL=anthropic/claude-sonnet-4.5
 OPENROUTER_OBSERVE_MODEL=anthropic/claude-sonnet-4.5
 ```
 
-### Image input
+## Demo
 
-The chat input accepts a visual target alongside (or instead of) text. Paste an image from your clipboard, drop a file onto the input, or click the paperclip. Cambium ships the image as a content block in the same `/api/mutate` request — Sonnet 4.5 sees the image and the current code, and proposes mutations that match the design.
-
-Constraints:
-- PNG, JPEG, WebP, or GIF
-- Under 5 MB per image
-- Adds ~1500–2000 input tokens per image (priced as standard input on OpenRouter)
-
-### Full-screen mode + floating chat
-
-After the first mutation lands (or when you return to a saved session), Cambium flips to a full-screen view of the running app. A floating chat button in the bottom-right opens a side drawer for continued conversation, diff previews, and the mutation history. Suggestions appear as toasts in the top-right; after 60s they collapse into a green count badge on the floating button so they stop demanding attention. Use the column-split icon in the drawer header to return to the split editor view — your choice locks for the rest of the session.
-
-### Restoring earlier versions
-
-Every applied mutation snapshots the full WebContainer file tree. Hover any entry in the mutation log and click **Restore** to revert to that version. The current code is overwritten and any later mutations drop from the log. Your `useHostState` data (notes, todos, settings) survives the restore — it lives in the host's IDB layer, not in the WC files.
-
-### Auto-resolving missing imports
-
-When Claude introduces an import that isn't in the seed's `package.json` (say, `framer-motion`), Vite would normally fail to resolve it. Cambium's `RuntimeErrorWatcher` scans the dev-server output for `Failed to resolve import "X"`, parses the package name (handling `@scope/pkg` and `pkg/subpath` cleanly), and runs `npm install X` inside the WebContainer automatically. A small "Installing X…" banner shows progress. Vite picks up the new dep and re-renders without you having to do anything.
-
-The watcher dedupes by package name per session, so a noisy log won't trigger redundant installs. Failed installs surface as a regular error (e.g., a typo'd package name like `reactt`).
-
-## The canonical demo
-
-1. Boot the container, click **Notes** quick-pick. The first mutation scaffolds a notes app from the welcome canvas
-2. Add five notes prefixed with `TODO:` ("TODO: buy milk", "TODO: call mom", etc.)
-3. After roughly 20 events, the suggestion engine analyses the stream. Within ~15s a card surfaces: _"User typed TODO: prefix 5+ times → Add checkbox toggle to TODO: lines"_
+1. Boot the container, click **Notes**. The first mutation scaffolds a notes app from the welcome canvas
+2. Add five notes prefixed with `TODO:` ("TODO: buy milk", "TODO: call mom", ...)
+3. After ~20 events, the suggestion engine fires. A short card slides in: **I noticed** *"You typed 'TODO:' as a prefix 5 times"* → **Add a checkbox toggle next to TODO items**
 4. Click **Build it**. The streaming diff fills in. Click **Apply**
 5. Checkboxes appear next to your TODO items. The notes are still there. The iframe never reloaded
-6. Type a follow-up in chat: `"make the checked items strike through and fade"` → streams → apply
-7. Refresh the page. The app reappears with everything intact
+6. Type in chat: `make the checked items strike through and fade` → streams → apply
+7. Refresh the page. Everything reappears
 
-## How it works
+The same flow works for richer intent: typing `May 1: ...`, `May 2: ...`, `May 3: ...` produces a date-picker suggestion (not a literal "prepend May 4:" feature). Dragging todo items vertically with no drag handler produces a reorder suggestion.
+
+---
+
+## Features
+
+### Talk to a running app
+
+- **Live mutation pipeline.** Type an instruction, get a streaming diff preview, apply with one click. Vite HMR propagates the change without a full reload — your scroll position, focus, and unsaved input stay put
+- **Image input.** Paste from clipboard, drop a file, or click the paperclip. PNG / JPEG / WebP / GIF, ≤ 5 MB. The model sees the image and the current code and proposes mutations that match the design
+- **Quick-picks.** 10 starter templates (Notes, Todo list, Habit tracker, Pomodoro, Expenses, Kanban, Markdown notes, Flashcards, Reading list, Mood journal) so you can skip the cold start
+- **Mutation log + restore.** Every applied mutation snapshots the full WC file tree. Hover an entry, click **Restore**, and the code reverts to that point — your `useHostState` data survives the rollback
+
+### Self-observing app
+
+- **Passive observer in the iframe.** Captures `input`, `click`, `pointerdown` / `pointerup` (drag), and modified `keydown` events. Click events carry an `interactive: boolean` flag so the model can distinguish misclicks from intent
+- **Drag-attempt detection.** Pointer-down + ≥8px move + pointer-up is captured even when the app has no drag handler — the gesture itself reveals reorder/swipe intent
+- **Intent-first inference.** The observe model is told to parse repeating tokens as data first (date / time / money / sequence / label) and serve the inferred type, not the literal string. Typing dates produces a date picker, not an autocomplete that breaks at month boundaries
+- **Click & drag intent.** Repeated clicks on non-interactive content elements → edit / open / toggle suggestion; drag gestures on list items → reorder; horizontal drags between board columns → move-between-columns
+- **Short, plain-language cards.** Each suggestion shows a one-line "I noticed" observation and a ≤70-char headline naming the feature in user terms — no code references, no implementation chatter
+- **No re-show after action.** Once you click Build it or Skip, the feature is excluded from future analyses (both server-side via excludeFeatures and client-side dedup) so it doesn't bounce back
+
+### Robustness
+
+- **Auto-install missing imports.** When Claude introduces an import not in the seed's `package.json`, the `RuntimeErrorWatcher` scans Vite's output for `Failed to resolve import "X"`, runs `npm install X` inside the WC, and nudges the importing file so Vite re-resolves
+- **Two persistence layers.** App code lives in the WC filesystem (snapshotted to IDB); app state lives in host IDB via `useHostState`. State survives mutations that change hook order — a case where Fast Refresh would normally reset everything
+- **Prompt caching.** System prompt and current-code snapshot are marked ephemeral with a 5-min TTL. Subsequent calls in a session drop ~92% of input cost
+- **Bounded conversation history.** Mutate requests carry the last 6 turns so the model has context but the prompt doesn't grow unbounded
+
+---
+
+## Architecture
+
+### Layered structure
 
 ```
-+-----------------------------------------------------------------+
-|                       NEXT.JS HOST                              |
-|                                                                 |
-|   SplitShell (pre-mutation)    FullShell (post-mutation)        |
-|     ControlPanel                 FloatingFab                    |
-|     LiveApp                      SuggestionToast                |
-|                                  Drawer (ChatInput + log)       |
-|                                  Full-screen iframe             |
-|                                                                 |
-|              All shells share the same hook:                    |
-|              useMutationFlow                                    |
-|                                                                 |
-|     ChatInput  +  DiffPreview  +  MutationLog  +  SuggestionCard |
-|                                                                 |
-|        \                /                                       |
-|         \              /                                        |
-|       MutationOrchestrator    (propose / apply / restore)       |
-|       SuggestionEngine        (threshold + debounce + dedup)    |
-|       UsageCollector          (events -> IDB)                   |
-|       FileSystemManager       (snapshot / apply / overwriteSrc) |
-|       RuntimeErrorWatcher     (Vite log -> npm install)         |
-|       WebContainerHost        (boot / install / installPackage) |
-|       HostMessageBridge       (STATE_GET/SET, USAGE_EVENTS)     |
-|       SessionStore (IDB)      (code, state, log, events)        |
-|                                                                 |
-|        +-- /api/mutate    (Sonnet 4.5, streamObject, Zod,       |
-|        |                   cache_control, image input)          |
-|        +-- /api/observe   (Sonnet 4.5, generateObject, Zod)     |
-+-----------------------------------------------------------------+
+Next.js host (this repo)
+├── UI shells
+│   ├── SplitShell  (ControlPanel + LiveApp) — pre-first-mutation
+│   └── FullShell   (full iframe + FAB + drawer + suggestion toast) — post-mutation
+├── Shared hook
+│   └── useMutationFlow — propose / apply / restore / approveSuggestion / dismissSuggestion
+├── Core engines
+│   ├── MutationOrchestrator — propose / apply / rollback
+│   ├── SuggestionEngine     — threshold + debounce + feature-text dedup
+│   ├── UsageCollector       — persists iframe events to IDB
+│   ├── FileSystemManager    — snapshot / apply / checkpoint / restore
+│   ├── RuntimeErrorWatcher  — scans Vite log, triggers npm install
+│   ├── WebContainerHost     — boot / install / installPackage / touchFile
+│   ├── HostMessageBridge    — STATE_GET/SET + USAGE_EVENTS dispatcher
+│   └── SessionStore (IDB)   — snapshots, app state, mutation log, events
+├── Server routes
+│   ├── /api/mutate   — streamObject + search/replace + image content + cache_control
+│   └── /api/observe  — generateObject + pattern schema + intent-first prompt
+└── WebContainer iframe
+    └── Vite + React + Tailwind seed
+        ├── App.tsx
+        ├── hostState.ts  — useHostState<T>(key, initial)
+        └── observer.ts   — input/click/drag/key → postMessage to host
 ```
 
-### The mutation pipeline (Idea B)
+### Mutation pipeline
 
-1. User types an instruction
+1. User types an instruction (or approves a suggestion)
 2. `FileSystemManager.getAppSnapshot()` walks `src/` and reads every file
-3. `/api/mutate` is called with the instruction, snapshot, and a bounded conversation history (last 6 turns)
+3. `/api/mutate` is called with the instruction, snapshot, last-6 turns of chat history, and any attached image
 4. The route calls `streamObject` with a Zod schema. Claude returns a `mutations[]` array of search/replace blocks
 5. The client parses partial JSON as the stream arrives — the diff preview fills in live
-6. User clicks Apply. The orchestrator checkpoints the FS, runs each mutation, and either commits or rolls back on total failure
+6. User clicks Apply. `MutationOrchestrator` checkpoints the FS, runs each mutation, and either commits or rolls back on total failure
 7. On commit, the new file tree is snapshotted to IndexedDB and the mutation is logged
 
-### The observation pipeline (Idea D)
+### Observation pipeline
 
-1. The seed's `observer.ts` listens to `input`, `click`, and `keydown` events
+1. The seed's `observer.ts` listens for `input`, `click` (with `interactive` flag), `pointerdown`/`pointerup` (with ≥8px move → `drag` event), and modified `keydown`
 2. Events batch (20 events) or time out (10s) and post to the host via `postMessage`
-3. `HostMessageBridge` origin-checks and forwards to `UsageCollector`
-4. The collector persists events to IndexedDB
-5. After every batch, `SuggestionEngine.maybeAnalyse()` checks: ≥20 new events, ≥15s since last run, not currently busy
-6. If the gate opens, the engine sends the last 100 events + current code to `/api/observe`
-7. The model returns patterns. Anything below 0.70 confidence is dropped
-8. Surviving patterns appear as a suggestion card. Approval routes through the same mutation pipeline
+3. `HostMessageBridge` origin-checks and forwards to `UsageCollector`, which persists events to IndexedDB
+4. After every batch, `SuggestionEngine.maybeAnalyse()` gates on: ≥20 new events, ≥15s since last run, not busy
+5. If open, the engine sends the last 100 events + current code + already-shown features to `/api/observe`
+6. The observe model reasons **intent-first** — parses repeating tokens as data (date / time / money / sequence / label), reads surrounding context and the app's purpose, then proposes a feature that serves the inferred goal. Drag and non-interactive-click events route to reorder / edit / swipe candidates
+7. Each pattern carries a short `headline` (≤70 chars) for the card, a short `observation` (≤100 chars), and a verbose `proposed_feature` for the downstream builder
+8. Below 0.70 confidence is dropped. Surviving patterns appear as a toast in the top-right; approval routes through the mutation pipeline
 
-### The two persistence layers
+### Persistence layers
 
-| Layer       | Where it lives                          | Survives                          |
-| ----------- | --------------------------------------- | --------------------------------- |
-| App code    | WC filesystem → snapshotted to IDB      | Refresh, multi-session            |
-| App state   | Host IDB, synced via `useHostState`     | Code mutations + Fast Refresh     |
-| Mutation log| Host IDB                                | Refresh                           |
-| Events      | Host IDB (24h rolling purge)            | Refresh                           |
 
-The seed exposes a `useHostState<T>(key, initial)` hook. Inside the WC, calling `setNotes([...])` triggers a `postMessage` to the host, which writes to IDB. When the iframe reloads (or a Fast Refresh remount), the hook fetches the saved value back. This means React state survives mutations that change hook order — a case where Fast Refresh would normally reset everything.
+| Layer        | Where it lives                      | Survives                      |
+| ------------ | ----------------------------------- | ----------------------------- |
+| App code     | WC filesystem → snapshotted to IDB  | Refresh, multi-session        |
+| App state    | Host IDB, synced via `useHostState` | Code mutations + Fast Refresh |
+| Mutation log | Host IDB                            | Refresh                       |
+| Events       | Host IDB (24h rolling purge)        | Refresh                       |
+
+
+The seed exposes a `useHostState<T>(key, initial)` hook. Inside the WC, calling `setNotes([...])` triggers a `postMessage` to the host, which writes to IDB. When the iframe reloads (or Fast Refresh remounts), the hook fetches the saved value back — so React state survives mutations that change hook order.
+
+---
+
+## Limitations
+
+- **Desktop only.** WebContainers need COOP/COEP cross-origin isolation. Works in modern Chromium and Firefox; mobile support is limited
+- **One container per tab.** WebContainers enforce a single instance per browser tab. A second tab errors clearly
+- **Block-match failures.** Search/replace requires character-exact matching. Claude occasionally generates a search block that misses by whitespace. The orchestrator surfaces these per-file and applies the rest of the mutation; if every block fails, it rolls back
+- **State survival is best-effort.** When a mutation adds a hook to an existing component, Fast Refresh remounts and React state resets. `useHostState` mitigates this for explicitly-persisted data but not for in-progress UI state
+- **Auto-install is missing-import only.** Type errors, syntax errors, and runtime exceptions still need a manual follow-up prompt
+- **Restore is destructive.** Restoring a historical snapshot replaces the current code and truncates the mutation log — no branching
+- **One model, no fallback.** Both routes use Sonnet via OpenRouter. An outage on either layer fails the request
+
+## Coming soon
+
+- **Visible terminal pane.** WC stdout is captured (`appendTerminal`) but not rendered. An xterm.js drawer in split view would expose npm install / Vite output for boot debugging
+- **Auto-fix runtime errors.** Extend `RuntimeErrorWatcher` beyond missing-import to feed type errors, syntax errors, and runtime exceptions back through `/api/mutate` as a self-healing loop
+- **Multi-provider fallback.** A second provider (direct Anthropic, or a different model) would survive OpenRouter / model outages
+- **Branching / forking the mutation log.** Today restore is destructive. Branching would let you fork off a historical snapshot, try a variation, and keep the original
+- **Better drag disambiguation.** Reorder vs. swipe-to-delete vs. cross-container-move are inferred from direction alone. Adding pointer-trail samples (not just from/to) would improve the model's read
+
+---
+
+## Stack
+
+
+| Layer           | Choice                                               |
+| --------------- | ---------------------------------------------------- |
+| Framework       | Next.js 16 (App Router, TS, Turbopack)               |
+| In-browser Node | `@webcontainer/api`                                  |
+| AI gateway      | OpenRouter                                           |
+| LLM (mutate)    | `anthropic/claude-sonnet-4.5`                        |
+| LLM (observe)   | `anthropic/claude-sonnet-4.5`                        |
+| SDK             | Vercel AI SDK (`ai`) + `@openrouter/ai-sdk-provider` |
+| Schema          | Zod                                                  |
+| State (host)    | Zustand                                              |
+| Persistence     | IndexedDB via `idb`                                  |
+| Patch format    | Search/Replace blocks (Aider-style)                  |
+| Icons           | `@phosphor-icons/react`                              |
+| Styling         | Tailwind v4 (host) + Tailwind v3 (WC seed)           |
+
 
 ## Project layout
 
@@ -182,17 +187,18 @@ src/
     globals.css                  Tailwind, transition baseline, keyframes
     api/
       mutate/route.ts            streamObject + search/replace + image content + cache_control
-      observe/route.ts           generateObject + pattern schema + cache_control
+      observe/route.ts           generateObject + pattern schema + intent-first reasoning
   components/
     ControlPanel.tsx             Split-mode shell (sidebar + iframe)
-    FullShell.tsx                Full-screen shell (iframe + FAB + drawer + toast)
+    FullShell.tsx                Full-screen shell (iframe + FAB + drawer + suggestion toast)
     ChatInput.tsx                Textarea + quick-picks + image (paste/drop/paperclip)
     DiffPreview.tsx              Search/replace diff renderer
-    MutationLog.tsx              divide-y history with hover-to-restore
-    SuggestionCard.tsx           AI-noticed card
-    LiveApp.tsx                  Right pane in split mode (iframe + terminal drawer)
+    MutationLog.tsx              History with hover-to-restore
+    SuggestionCard.tsx           Short "I noticed" + headline card
+    LiveApp.tsx                  Right pane in split mode (iframe + boot progress)
+    ConfirmDialog.tsx            Destructive-action confirmation
   hooks/
-    useMutationFlow.ts           Shared propose/apply/restore handlers for both shells
+    useMutationFlow.ts           Shared propose/apply/restore/approve/dismiss handlers
   lib/
     WebContainerHost.ts          Boot/install/run + snapshot-aware mount + installPackage
     FileSystemManager.ts         snapshot/apply/checkpoint/restore/overwriteSrc
@@ -200,18 +206,18 @@ src/
     SessionStore.ts              IDB facade (snapshots, state, log, events, restore)
     HostMessageBridge.ts         STATE_GET/SET + USAGE_EVENTS dispatcher
     UsageCollector.ts            Persists events, drives engine
-    SuggestionEngine.ts          Threshold + debounce + dedup
-    SelfMutator.ts               Pattern -> instruction wrapper
-    RuntimeErrorWatcher.ts       Vite log scanner -> auto npm install
+    SuggestionEngine.ts          Threshold + debounce + feature-text dedup
+    SelfMutator.ts               Pattern → instruction wrapper
+    RuntimeErrorWatcher.ts       Vite log scanner → auto npm install
     mutation-types.ts            Zod schemas for /api/mutate
-    observe-types.ts             Zod schemas for /api/observe
+    observe-types.ts             Zod schemas for /api/observe (headline + proposed_feature)
     webcontainer/
-      seed-files.ts              Vite + React + Tailwind + observer + useHostState
+      seed-files.ts              Vite + React + Tailwind + observer (input/click/drag) + useHostState
   store/
-    appStore.ts                  Zustand: WC state, mutations, suggestions, view mode, auto-fix banner
+    appStore.ts                  Zustand: WC state, mutations, suggestions, view mode, banners
 ```
 
-## Tuning knobs
+## Tuning
 
 Demo iteration is faster with lower thresholds. Edit `src/lib/SuggestionEngine.ts`:
 
@@ -223,39 +229,6 @@ const CONFIDENCE_FLOOR = 0.7;  // patterns below this are dropped
 
 For a 10-second demo loop: drop `ANALYSIS_THRESHOLD` to 5 and `DEBOUNCE_MS` to 2000.
 
-## Cost
-
-Sonnet 4.5 via OpenRouter, **prompt caching active** (system prompt + snapshot block marked ephemeral, 5-minute TTL):
-
-| Action                                | Approximate cost |
-| ------------------------------------- | ---------------- |
-| First mutation in a session (cold)    | ~$0.025          |
-| Subsequent mutations (warm cache)     | ~$0.015 each (input cost drops ~92%) |
-| Image-attached mutation               | +~$0.01 (image tokens) |
-| One observe analysis                  | ~$0.04           |
-| Auto npm install                      | $0 (no LLM call) |
-| Heavy 10-minute session (with cache)  | ~$0.20 – $0.35   |
-
-Cache wins are dominated by input-token savings (~92%) but output tokens still bill at full rate, so total session cost reduction is closer to 30–50%. Bigger code bases see bigger gains. Each call logs detailed cost breakdown via `[/api/mutate] usage:` in the dev console.
-
-## Limitations and known caveats
-
-- **Desktop only.** WebContainers need COOP/COEP cross-origin isolation. Works in modern Chromium and Firefox; mobile support is limited.
-- **One container per tab.** WebContainers enforce a single instance per browser tab. Opening Cambium in a second tab errors clearly.
-- **Block-match failures.** Search/replace requires character-exact matching. Claude occasionally generates a search block that misses by whitespace. The orchestrator surfaces these per-file and applies the rest of the mutation; if every block fails, it rolls back.
-- **State survival is best-effort.** When a mutation adds a hook to an existing component, Fast Refresh remounts and React state resets. `useHostState` mitigates this for explicitly-persisted data but not for in-progress UI state. The system prompt steers Claude toward sibling additions rather than internal hook insertions.
-- **Auto-install is missing-import only.** The RuntimeErrorWatcher resolves missing npm packages. Type errors, syntax errors, and runtime exceptions still need a manual follow-up prompt — a generic "fix this error with AI" loop is a natural extension but not built yet.
-- **One model, no fallback.** If OpenRouter is down or the model slug is unavailable, both endpoints fail. A multi-provider fallback would be a worthwhile robustness add.
-- **Restore is destructive.** Restoring a historical snapshot replaces the current code and truncates the mutation log. No branching/forking — that's a future-work item.
-
-## Inspiration
-
-- WebContainers (StackBlitz) — without this, the whole concept is impossible
-- Aider's search/replace block format — the highest-success patching strategy for LLMs
-- Vercel AI SDK's `streamObject` — partial-JSON streaming that makes live diff previews feel instant
-- Bolt.new and v0 — proved that in-browser code generation can feel native
-- The Phosphor icon family — pixel-precise where it counts
-
 ## License
 
-MIT. Build whatever you like with it.
+MIT.

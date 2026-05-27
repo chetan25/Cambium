@@ -9,6 +9,9 @@ export const patternSchema = z.object({
   observation: z.string(),
   signal_strength: z.number(),
   confidence: z.number(),
+  // Short, plain-language headline shown in the suggestion card. ≤ 70 chars,
+  // describes the feature the user gets, not how it's implemented.
+  headline: z.string(),
   proposed_feature: z.string(),
   complexity: z.enum(["low", "medium", "high"]),
   implementation_hint: z.string(),

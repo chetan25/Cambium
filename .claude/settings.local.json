@@ -20,7 +20,11 @@
       "Bash(curl -s -X POST http://localhost:3000/api/mutate -H 'Content-Type: application/json' --data-binary @.test-mutate.json -w 'STATUS:%{http_code} TIME:%{time_total}s\\\\n' -o /tmp/.r2.txt --max-time 90)",
       "Bash(xargs grep -l -i \"headers\")",
       "Bash(npx tsc *)",
-      "Bash(node *)"
+      "Bash(node *)",
+      "PowerShell(Get-ChildItem -Path \"D:\\\\Programming\\\\self-evolving-app\" -Force | Where-Object { $_.Name -notlike \"node_modules\" -and $_.Name -notlike \".next\" } | Select-Object Name, Mode)",
+      "PowerShell(Get-ChildItem -Path \"D:\\\\Programming\\\\self-evolving-app\\\\src\" -Recurse | Where-Object { -not $_.PSIsContainer } | Select-Object FullName)",
+      "PowerShell(npx tsc --noEmit 2>&1 | Select-Object -Last 30)",
+      "PowerShell(npx tsc --noEmit 2>&1)"
     ]
   }
 }
